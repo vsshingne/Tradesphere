@@ -3,6 +3,8 @@ package model
 import (
 	"time"
 
+	"tradesphere/money"
+
 	"github.com/google/uuid"
 )
 
@@ -36,18 +38,25 @@ const (
 	OrderCancelledEvent OrderEventType = "ORDER_CANCELLED"
 )
 
+type OrderCommandType string
+
+const (
+	CreateOrderCommand OrderCommandType = "CREATE_ORDER"
+	CancelOrderCommand OrderCommandType = "CANCEL_ORDER"
+)
+
 type Order struct {
-	ID                uuid.UUID   `json:"id"`
-	UserID            uuid.UUID   `json:"user_id"`
-	Symbol            string      `json:"symbol"`
-	Side              Side        `json:"side"`
-	Type              OrderType   `json:"type"`
-	Price             float64     `json:"price"`
-	Quantity          float64     `json:"quantity"`
-	RemainingQuantity float64     `json:"remaining_quantity"`
-	ReservedAmount    float64     `json:"reserved_amount"`
-	Status            OrderStatus `json:"status"`
-	CreatedAt         time.Time   `json:"created_at"`
+	ID                uuid.UUID      `json:"id"`
+	UserID            uuid.UUID      `json:"user_id"`
+	Symbol            string         `json:"symbol"`
+	Side              Side           `json:"side"`
+	Type              OrderType      `json:"type"`
+	Price             money.Money    `json:"price"`
+	Quantity          money.Quantity `json:"quantity"`
+	RemainingQuantity money.Quantity `json:"remaining_quantity"`
+	ReservedAmount    money.Money    `json:"reserved_amount"`
+	Status            OrderStatus    `json:"status"`
+	CreatedAt         time.Time      `json:"created_at"`
 }
 
 type OrderEvent struct {
@@ -58,7 +67,23 @@ type OrderEvent struct {
 	Symbol            string         `json:"symbol"`
 	Side              Side           `json:"side"`
 	Status            OrderStatus    `json:"status"`
-	RemainingQuantity float64        `json:"remaining_quantity"`
-	ReservedAmount    float64        `json:"reserved_amount"`
+	RemainingQuantity money.Quantity `json:"remaining_quantity"`
+	ReservedAmount    money.Money    `json:"reserved_amount"`
 	CreatedAt         time.Time      `json:"created_at"`
+}
+
+type CancelRequest struct {
+	OrderID uuid.UUID `json:"order_id"`
+	UserID  uuid.UUID `json:"user_id"`
+	Symbol  string    `json:"symbol"`
+	Side    Side      `json:"side"`
+}
+
+type OrderCommand struct {
+	ID        uuid.UUID        `json:"id"`
+	Type      OrderCommandType `json:"type"`
+	Symbol    string           `json:"symbol"`
+	Order     *Order           `json:"order,omitempty"`
+	Cancel    *CancelRequest   `json:"cancel,omitempty"`
+	CreatedAt time.Time        `json:"created_at"`
 }

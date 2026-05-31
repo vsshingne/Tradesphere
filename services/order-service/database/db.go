@@ -7,12 +7,17 @@ import (
 	"os"
 	"time"
 
+	"tradesphere/money"
 	"tradesphere/order/model"
+	"tradesphere/order/telemetry"
 
+	"github.com/google/uuid"
 	_ "github.com/lib/pq"
 )
 
 var DB *sql.DB
+
+var dbQueryDuration = telemetry.Duration("db_query_duration_seconds", "Duration of order-service database operations.")
 
 func InitDB() {
 	host := os.Getenv("DB_HOST")
@@ -39,18 +44,13 @@ func InitDB() {
 	DB.SetMaxIdleConns(5)
 	DB.SetConnMaxLifetime(5 * time.Minute)
 
-	_, err = DB.Exec(`
-		ALTER TABLE orders
-		ADD COLUMN IF NOT EXISTS reserved_amount DOUBLE PRECISION NOT NULL DEFAULT 0
-	`)
-	if err != nil {
-		log.Fatal("failed to ensure orders.reserved_amount:", err)
-	}
-
 	log.Println("Order DB connected")
 }
 
 func InsertOrder(order model.Order) error {
+	start := time.Now()
+	defer dbQueryDuration.Observe(time.Since(start))
+
 	_, err := DB.Exec(`
 		INSERT INTO orders (
 			id,
@@ -80,7 +80,44 @@ func InsertOrder(order model.Order) error {
 	return err
 }
 
-func DeleteOrder(orderID string) error {
-	_, err := DB.Exec(`DELETE FROM orders WHERE id = $1`, orderID)
-	return err
+func GetOrder(orderID uuid.UUID) (*model.Order, error) {
+	start := time.Now()
+	defer dbQueryDuration.Observe(time.Since(start))
+
+	row := DB.QueryRow(`
+		SELECT id, user_id, symbol, side, price, quantity, remaining_quantity, reserved_amount, status, created_at
+		FROM orders
+		WHERE id = $1
+	`, orderID)
+
+	var order model.Order
+	var side string
+	var status string
+	var price int64
+	var quantity int64
+	var remainingQuantity int64
+	var reservedAmount int64
+
+	if err := row.Scan(
+		&order.ID,
+		&order.UserID,
+		&order.Symbol,
+		&side,
+		&price,
+		&quantity,
+		&remainingQuantity,
+		&reservedAmount,
+		&status,
+		&order.CreatedAt,
+	); err != nil {
+		return nil, err
+	}
+
+	order.Price = money.Money(price)
+	order.Quantity = money.Quantity(quantity)
+	order.RemainingQuantity = money.Quantity(remainingQuantity)
+	order.ReservedAmount = money.Money(reservedAmount)
+	order.Side = model.Side(side)
+	order.Status = model.OrderStatus(status)
+	return &order, nil
 }

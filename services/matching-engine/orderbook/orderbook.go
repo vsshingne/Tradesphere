@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"tradesphere/matching/model"
+	"tradesphere/money"
 
 	"github.com/google/uuid"
 )
@@ -99,6 +100,19 @@ func (ob *OrderBook) ProcessOrder(order *model.Order) []model.Trade {
 	}
 
 	return trades
+}
+
+func (ob *OrderBook) RestoreOrder(order *model.Order) {
+	if order == nil || order.RemainingQuantity <= 0 {
+		return
+	}
+
+	if order.Side == model.Buy {
+		heap.Push(ob.BuyOrders, order)
+		return
+	}
+
+	heap.Push(ob.SellOrders, order)
 }
 
 func (ob *OrderBook) matchBuyMarketOrder(order *model.Order) []model.Trade {
@@ -233,7 +247,7 @@ func (ob *OrderBook) matchSellOrder(order *model.Order) []model.Trade {
 	return trades
 }
 
-func createTrade(restingOrder, incomingOrder *model.Order, qty float64) model.Trade {
+func createTrade(restingOrder, incomingOrder *model.Order, qty money.Quantity) model.Trade {
 	buyOrder := restingOrder
 	sellOrder := incomingOrder
 
@@ -255,7 +269,7 @@ func createTrade(restingOrder, incomingOrder *model.Order, qty float64) model.Tr
 	}
 }
 
-func min(a, b float64) float64 {
+func min(a, b money.Quantity) money.Quantity {
 	if a < b {
 		return a
 	}
@@ -263,8 +277,8 @@ func min(a, b float64) float64 {
 }
 
 type PriceLevel struct {
-	Price    float64 `json:"price"`
-	Quantity float64 `json:"quantity"`
+	Price    money.Money    `json:"price"`
+	Quantity money.Quantity `json:"quantity"`
 }
 
 func (ob *OrderBook) Snapshot() (bids []PriceLevel, asks []PriceLevel) {

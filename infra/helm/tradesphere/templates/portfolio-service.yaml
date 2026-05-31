@@ -1,0 +1,69 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: portfolio-service
+  labels:
+    app: portfolio-service
+spec:
+  selector:
+    app: portfolio-service
+  ports:
+    - port: 8081
+      targetPort: 8081
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: portfolio-service
+spec:
+  replicas: {{ .Values.portfolioService.replicas }}
+  selector:
+    matchLabels:
+      app: portfolio-service
+  template:
+    metadata:
+      labels:
+        app: portfolio-service
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - portfolio-service
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: portfolio-service
+          image: {{ .Values.portfolioService.image }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8081
+          envFrom:
+            - configMapRef:
+                name: tradesphere-config
+            - secretRef:
+                name: tradesphere-secret
+          env:
+            {{- range $key, $val := .Values.global.env }}
+            - name: {{ $key }}
+              value: {{ $val | quote }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.portfolioService.resources | nindent 12 }}

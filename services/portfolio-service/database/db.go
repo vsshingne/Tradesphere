@@ -8,7 +8,9 @@ import (
 	"os"
 	"time"
 
+	"tradesphere/money"
 	"tradesphere/portfolio/model"
+	"tradesphere/portfolio/telemetry"
 
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
@@ -17,15 +19,16 @@ import (
 var DB *sql.DB
 
 var ErrEventAlreadyProcessed = errors.New("event already processed")
+var dbQueryDuration = telemetry.Duration("db_query_duration_seconds", "Duration of portfolio-service database operations.")
 
 type OrderReservation struct {
 	ID                uuid.UUID
 	UserID            uuid.UUID
 	Symbol            string
 	Side              string
-	Price             float64
-	RemainingQuantity float64
-	ReservedAmount    float64
+	Price             money.Money
+	RemainingQuantity money.Quantity
+	ReservedAmount    money.Money
 }
 
 func InitDB() {
@@ -48,121 +51,13 @@ func InitDB() {
 	DB.SetMaxIdleConns(5)
 	DB.SetConnMaxLifetime(5 * time.Minute)
 
-	_, err = DB.Exec(`
-		CREATE TABLE IF NOT EXISTS positions (
-			user_id UUID NOT NULL,
-			symbol TEXT NOT NULL,
-			quantity DOUBLE PRECISION NOT NULL DEFAULT 0,
-			PRIMARY KEY (user_id, symbol)
-		)
-	`)
-	if err != nil {
-		log.Fatal("failed to ensure positions table:", err)
-	}
-
-	_, err = DB.Exec(`
-		CREATE TABLE IF NOT EXISTS processed_events (
-			consumer_group TEXT NOT NULL,
-			event_id UUID NOT NULL,
-			processed_at TIMESTAMP NOT NULL DEFAULT NOW(),
-			PRIMARY KEY (consumer_group, event_id)
-		)
-	`)
-	if err != nil {
-		log.Fatal("failed to ensure processed_events table:", err)
-	}
-
-	_, err = DB.Exec(`
-		ALTER TABLE users
-		ADD COLUMN IF NOT EXISTS reserved_balance DOUBLE PRECISION NOT NULL DEFAULT 0
-	`)
-	if err != nil {
-		log.Fatal("failed to ensure users.reserved_balance:", err)
-	}
-
-	_, err = DB.Exec(`
-		ALTER TABLE positions
-		ADD COLUMN IF NOT EXISTS reserved_quantity DOUBLE PRECISION NOT NULL DEFAULT 0
-	`)
-	if err != nil {
-		log.Fatal("failed to ensure positions.reserved_quantity:", err)
-	}
-
-	_, err = DB.Exec(`
-		ALTER TABLE orders
-		ADD COLUMN IF NOT EXISTS reserved_amount DOUBLE PRECISION NOT NULL DEFAULT 0
-	`)
-	if err != nil {
-		log.Fatal("failed to ensure orders.reserved_amount:", err)
-	}
-
-	for _, stmt := range []string{
-		`DO $$
-		BEGIN
-			IF NOT EXISTS (
-				SELECT 1 FROM pg_constraint WHERE conname = 'users_balance_non_negative'
-			) THEN
-				ALTER TABLE users ADD CONSTRAINT users_balance_non_negative CHECK (balance >= 0);
-			END IF;
-		END $$;`,
-		`DO $$
-		BEGIN
-			IF NOT EXISTS (
-				SELECT 1 FROM pg_constraint WHERE conname = 'users_reserved_balance_non_negative'
-			) THEN
-				ALTER TABLE users ADD CONSTRAINT users_reserved_balance_non_negative CHECK (reserved_balance >= 0);
-			END IF;
-		END $$;`,
-		`DO $$
-		BEGIN
-			IF NOT EXISTS (
-				SELECT 1 FROM pg_constraint WHERE conname = 'positions_quantity_non_negative'
-			) THEN
-				ALTER TABLE positions ADD CONSTRAINT positions_quantity_non_negative CHECK (quantity >= 0);
-			END IF;
-		END $$;`,
-		`DO $$
-		BEGIN
-			IF NOT EXISTS (
-				SELECT 1 FROM pg_constraint WHERE conname = 'positions_reserved_quantity_non_negative'
-			) THEN
-				ALTER TABLE positions ADD CONSTRAINT positions_reserved_quantity_non_negative CHECK (reserved_quantity >= 0);
-			END IF;
-		END $$;`,
-		`DO $$
-		BEGIN
-			IF NOT EXISTS (
-				SELECT 1 FROM pg_constraint WHERE conname = 'orders_remaining_quantity_non_negative'
-			) THEN
-				ALTER TABLE orders ADD CONSTRAINT orders_remaining_quantity_non_negative CHECK (remaining_quantity >= 0);
-			END IF;
-		END $$;`,
-		`DO $$
-		BEGIN
-			IF NOT EXISTS (
-				SELECT 1 FROM pg_constraint WHERE conname = 'orders_reserved_amount_non_negative'
-			) THEN
-				ALTER TABLE orders ADD CONSTRAINT orders_reserved_amount_non_negative CHECK (reserved_amount >= 0);
-			END IF;
-		END $$;`,
-		`DO $$
-		BEGIN
-			IF NOT EXISTS (
-				SELECT 1 FROM pg_constraint WHERE conname = 'orders_status_valid'
-			) THEN
-				ALTER TABLE orders ADD CONSTRAINT orders_status_valid CHECK (status IN ('NEW', 'PARTIALLY_FILLED', 'FILLED', 'CANCELLED'));
-			END IF;
-		END $$;`,
-	} {
-		if _, err = DB.Exec(stmt); err != nil {
-			log.Fatal("failed to ensure check constraint:", err)
-		}
-	}
-
 	log.Println("Portfolio DB connected")
 }
 
 func IsEventProcessed(tx *sql.Tx, consumerGroup string, eventID uuid.UUID) (bool, error) {
+	start := time.Now()
+	defer dbQueryDuration.Observe(time.Since(start))
+
 	var processed bool
 	err := tx.QueryRow(`
 		SELECT EXISTS(
@@ -178,6 +73,9 @@ func IsEventProcessed(tx *sql.Tx, consumerGroup string, eventID uuid.UUID) (bool
 }
 
 func MarkEventProcessed(tx *sql.Tx, consumerGroup string, eventID uuid.UUID) error {
+	start := time.Now()
+	defer dbQueryDuration.Observe(time.Since(start))
+
 	res, err := tx.Exec(`
 		INSERT INTO processed_events (consumer_group, event_id)
 		VALUES ($1, $2)
@@ -198,6 +96,9 @@ func MarkEventProcessed(tx *sql.Tx, consumerGroup string, eventID uuid.UUID) err
 }
 
 func LockAccount(tx *sql.Tx, userID uuid.UUID) error {
+	start := time.Now()
+	defer dbQueryDuration.Observe(time.Since(start))
+
 	var exists int
 	err := tx.QueryRow(`
 		SELECT 1
@@ -209,6 +110,9 @@ func LockAccount(tx *sql.Tx, userID uuid.UUID) error {
 }
 
 func ReleaseOrderReservation(tx *sql.Tx, orderID uuid.UUID) error {
+	start := time.Now()
+	defer dbQueryDuration.Observe(time.Since(start))
+
 	order, err := LockOrderReservation(tx, orderID)
 	if err != nil {
 		return err
@@ -263,7 +167,13 @@ func ReleaseOrderReservation(tx *sql.Tx, orderID uuid.UUID) error {
 }
 
 func LockOrderReservation(tx *sql.Tx, orderID uuid.UUID) (*OrderReservation, error) {
+	start := time.Now()
+	defer dbQueryDuration.Observe(time.Since(start))
+
 	var order OrderReservation
+	var price int64
+	var remainingQuantity int64
+	var reservedAmount int64
 	err := tx.QueryRow(`
 		SELECT id, user_id, symbol, side, price, remaining_quantity, reserved_amount
 		FROM orders
@@ -274,18 +184,27 @@ func LockOrderReservation(tx *sql.Tx, orderID uuid.UUID) (*OrderReservation, err
 		&order.UserID,
 		&order.Symbol,
 		&order.Side,
-		&order.Price,
-		&order.RemainingQuantity,
-		&order.ReservedAmount,
+		&price,
+		&remainingQuantity,
+		&reservedAmount,
 	)
 	if err != nil {
 		return nil, err
 	}
+	order.Price = money.Money(price)
+	order.RemainingQuantity = money.Quantity(remainingQuantity)
+	order.ReservedAmount = money.Money(reservedAmount)
 	return &order, nil
 }
 
 func ApplyBuyerTrade(tx *sql.Tx, trade model.Trade) error {
-	total := trade.Price * trade.Quantity
+	start := time.Now()
+	defer dbQueryDuration.Observe(time.Since(start))
+
+	total, err := money.CostFor(trade.Price, trade.Quantity)
+	if err != nil {
+		return err
+	}
 	order, err := LockOrderReservation(tx, trade.BuyOrderID)
 	if err != nil {
 		return err
@@ -294,7 +213,10 @@ func ApplyBuyerTrade(tx *sql.Tx, trade model.Trade) error {
 		return errors.New("buyer order reservation mismatch")
 	}
 
-	nextReservedAmount := order.RemainingQuantity * order.Price
+	nextReservedAmount, err := money.CostFor(order.Price, order.RemainingQuantity)
+	if err != nil {
+		return err
+	}
 	if nextReservedAmount < 0 || order.ReservedAmount < nextReservedAmount {
 		return errors.New("invalid buyer reserved amount state")
 	}
@@ -347,7 +269,13 @@ func ApplyBuyerTrade(tx *sql.Tx, trade model.Trade) error {
 }
 
 func ApplySellerTrade(tx *sql.Tx, trade model.Trade) error {
-	total := trade.Price * trade.Quantity
+	start := time.Now()
+	defer dbQueryDuration.Observe(time.Since(start))
+
+	total, err := money.CostFor(trade.Price, trade.Quantity)
+	if err != nil {
+		return err
+	}
 	order, err := LockOrderReservation(tx, trade.SellOrderID)
 	if err != nil {
 		return err
@@ -356,7 +284,7 @@ func ApplySellerTrade(tx *sql.Tx, trade model.Trade) error {
 		return errors.New("seller order reservation mismatch")
 	}
 
-	nextReservedAmount := order.RemainingQuantity
+	nextReservedAmount := money.Money(order.RemainingQuantity)
 	if nextReservedAmount < 0 || order.ReservedAmount < nextReservedAmount {
 		return errors.New("invalid seller reserved amount state")
 	}

@@ -50,9 +50,11 @@ services:
     entrypoint: /bin/sh
     command: -c "
       sleep 10 &&
-      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic orders --replication-factor 1 --partitions 1 &&
-      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic trades --replication-factor 1 --partitions 1 &&
-      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic order-events --replication-factor 1 --partitions 1"
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic orders --replication-factor 1 --partitions 3 &&
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic trades --replication-factor 1 --partitions 3 &&
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic order-events --replication-factor 1 --partitions 3 &&
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic orders-dlq --replication-factor 1 --partitions 1 &&
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic trades-dlq --replication-factor 1 --partitions 1"
 
   postgres:
     image: postgres:15
@@ -72,60 +74,120 @@ services:
       timeout: 5s
       retries: 10
 
+  db-migrate:
+    image: migrate/migrate:v4.17.1
+    container_name: db-migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      [
+        "-path",
+        "/migrations",
+        "-database",
+        "postgres://tradesphere:tradesphere@postgres:5432/tradesphere?sslmode=disable",
+        "up"
+      ]
+    volumes:
+      - ./infra/postgres/migrations:/migrations:ro
+
   order-service:
-    build: ./services/order-service
+    build:
+      context: .
+      dockerfile: ./services/order-service/Dockerfile
     container_name: order-service
     depends_on:
       kafka-init:
         condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
     ports:
       - "8080:8080"
     environment:
       KAFKA_BROKER: kafka:9092
       DB_HOST: postgres
+      JWT_SECRET: tradesphere-secret-key
 
   matching-engine:
-    build: ./services/matching-engine
+    build:
+      context: .
+      dockerfile: ./services/matching-engine/Dockerfile
     container_name: matching-engine
     depends_on:
       kafka-init:
         condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
     ports:
       - "8082:8082"
     environment:
       KAFKA_BROKER: kafka:9092
       DB_HOST: postgres
+      JWT_SECRET: tradesphere-secret-key
 
   portfolio-service:
-    build: ./services/portfolio-service
+    build:
+      context: .
+      dockerfile: ./services/portfolio-service/Dockerfile
     container_name: portfolio-service
     depends_on:
       kafka-init:
         condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
     ports:
       - "8081:8081"
     environment:
       KAFKA_BROKER: kafka:9092
       DB_HOST: postgres
       KAFKA_GROUP_ID: portfolio-service
+      RECONCILIATION_INTERVAL: 1m
+      JWT_SECRET: tradesphere-secret-key
 
   websocket-service:
-    build: ./services/websocket-service
+    build:
+      context: .
+      dockerfile: ./services/websocket-service/Dockerfile
     container_name: websocket-service
     depends_on:
       kafka-init:
+        condition: service_completed_successfully
+      db-migrate:
         condition: service_completed_successfully
     ports:
       - "8083:8083"
     environment:
       KAFKA_BROKER: kafka:9092
       DB_HOST: postgres
+      JWT_SECRET: tradesphere-secret-key
+
+  user-service:
+    build:
+      context: .
+      dockerfile: ./services/user-service/Dockerfile
+    container_name: user-service
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+    ports:
+      - "8084:8084"
+    environment:
+      DB_HOST: postgres
+      JWT_SECRET: tradesphere-secret-key
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: ./services/api-gateway/Dockerfile
+    container_name: api-gateway
+    depends_on:
+      - user-service
+      - order-service
+      - portfolio-service
+    ports:
+      - "8000:8000"
+    environment:
+      JWT_SECRET: tradesphere-secret-key
 
 volumes:
   kafka-data:

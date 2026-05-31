@@ -2,37 +2,44 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
+	"tradesphere/money"
 	"tradesphere/order/database"
 	"tradesphere/order/kafka"
 	"tradesphere/order/model"
-
+	"tradesphere/order/telemetry"
+	"tradesphere/auth"
+	"tradesphere/observability"
+	"golang.org/x/time/rate"
 	"github.com/google/uuid"
 )
 
 type CreateOrderRequest struct {
-	UserID   string  `json:"user_id"`
-	Symbol   string  `json:"symbol"`
-	Side     string  `json:"side"`
-	Type     string  `json:"type"`
-	Price    float64 `json:"price"`
-	Quantity float64 `json:"quantity"`
+	UserID   string         `json:"user_id"`
+	Symbol   string         `json:"symbol"`
+	Side     string         `json:"side"`
+	Type     string         `json:"type"`
+	Price    money.Money    `json:"price"`
+	Quantity money.Quantity `json:"quantity"`
 }
 
 type reservationRequest struct {
-	OrderID        string  `json:"order_id,omitempty"`
-	UserID         string  `json:"user_id"`
-	Symbol         string  `json:"symbol"`
-	Side           string  `json:"side"`
-	Price          float64 `json:"price"`
-	Quantity       float64 `json:"quantity"`
-	ReservedAmount float64 `json:"reserved_amount"`
+	OrderID        string         `json:"order_id,omitempty"`
+	UserID         string         `json:"user_id"`
+	Symbol         string         `json:"symbol"`
+	Side           string         `json:"side"`
+	Price          money.Money    `json:"price"`
+	Quantity       money.Quantity `json:"quantity"`
+	ReservedAmount money.Money    `json:"reserved_amount"`
 }
 
 type portfolioErrorResponse struct {
@@ -41,17 +48,61 @@ type portfolioErrorResponse struct {
 
 var portfolioClient = &http.Client{Timeout: 3 * time.Second}
 
-func main() {
-	database.InitDB()
+var (
+	httpRequestsTotal     = telemetry.Counter("http_requests_total", "Total HTTP requests handled by order-service.")
+	ordersCreatedTotal    = telemetry.Counter("orders_created_total", "Total orders successfully created.")
+	cancelRequestsTotal   = telemetry.Counter("order_cancel_requests_total", "Total cancel requests accepted by order-service.")
+	portfolioCallDuration = telemetry.Duration("portfolio_http_duration_seconds", "Duration of portfolio-service HTTP calls from order-service.")
+)
 
-	http.HandleFunc("/orders", createOrderHandler)
-	http.HandleFunc("/healthz", healthHandler)
+func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	database.InitDB()
+	
+	shutdown := observability.Init("order-service")
+	defer shutdown(context.Background())
+
+	go kafka.StartOrderOutboxPublisher(ctx)
+
+	authMiddleware := func(next http.Handler) http.Handler {
+		return auth.RateLimit(rate.Limit(10), 20)(auth.RequireAuth("user")(next))
+	}
+
+	mux := http.NewServeMux()
+	mux.Handle("/orders", authMiddleware(http.HandlerFunc(createOrderHandler)))
+	mux.Handle("/orders/", authMiddleware(http.HandlerFunc(orderActionHandler)))
+	mux.HandleFunc("/healthz", healthHandler)
+	mux.Handle("/internal-metrics", telemetry.Handler())
+	mux.Handle("/metrics", observability.MetricsHandler())
+
+	// Wrap mux with observability
+	handler := observability.HTTPMiddleware(telemetry.RequestIDMiddleware(mux))
+
+	srv := &http.Server{
+		Addr:              ":8080",
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("order-service shutdown error: %v", err)
+		}
+	}()
 
 	log.Println("Order Service running on :8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatal(err)
+	}
 }
 
 func createOrderHandler(w http.ResponseWriter, r *http.Request) {
+	httpRequestsTotal.Inc()
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -70,6 +121,12 @@ func createOrderHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userIDStr, ok := r.Context().Value(auth.UserIDKey).(string)
+	if !ok || req.UserID != userIDStr {
+		http.Error(w, "user_id in request does not match token", http.StatusUnauthorized)
+		return
+	}
+
 	side := strings.ToUpper(strings.TrimSpace(req.Side))
 	if side != string(model.Buy) && side != string(model.Sell) {
 		http.Error(w, "side must be BUY or SELL", http.StatusBadRequest)
@@ -80,8 +137,8 @@ func createOrderHandler(w http.ResponseWriter, r *http.Request) {
 	if req.Type != "" {
 		orderType = model.OrderType(strings.ToUpper(strings.TrimSpace(req.Type)))
 	}
-	if orderType != model.Limit && orderType != model.Market {
-		http.Error(w, "type must be LIMIT or MARKET", http.StatusBadRequest)
+	if orderType != model.Limit {
+		http.Error(w, "only LIMIT orders are supported", http.StatusBadRequest)
 		return
 	}
 
@@ -90,8 +147,14 @@ func createOrderHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "symbol and quantity must be valid", http.StatusBadRequest)
 		return
 	}
-	if orderType == model.Limit && req.Price <= 0 {
+	if req.Price <= 0 {
 		http.Error(w, "price must be valid for LIMIT orders", http.StatusBadRequest)
+		return
+	}
+
+	reservedAmount, err := calculateReservedAmount(model.Side(side), req.Price, req.Quantity)
+	if err != nil {
+		http.Error(w, "price and quantity cannot be represented exactly", http.StatusBadRequest)
 		return
 	}
 
@@ -104,7 +167,7 @@ func createOrderHandler(w http.ResponseWriter, r *http.Request) {
 		Price:             req.Price,
 		Quantity:          req.Quantity,
 		RemainingQuantity: req.Quantity,
-		ReservedAmount:    calculateReservedAmount(model.Side(side), req.Price, req.Quantity),
+		ReservedAmount:    reservedAmount,
 		Status:            model.New,
 		CreatedAt:         time.Now(),
 	}
@@ -129,7 +192,7 @@ func createOrderHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := database.InsertOrder(order); err != nil {
+	if err := database.InsertOrderWithOutbox(order); err != nil {
 		if releaseErr := rollbackReservation(order); releaseErr != nil {
 			log.Printf("failed to release reservation for order %s after DB error: %v", order.ID, releaseErr)
 		}
@@ -137,27 +200,90 @@ func createOrderHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := kafka.PublishOrder(order); err != nil {
-		if releaseErr := rollbackReservation(order); releaseErr != nil {
-			log.Printf("failed to release reservation for order %s after Kafka publish error: %v", order.ID, releaseErr)
-		}
-		if deleteErr := database.DeleteOrder(order.ID.String()); deleteErr != nil {
-			log.Printf("failed to delete order %s after Kafka publish error: %v", order.ID, deleteErr)
-		}
-		http.Error(w, "failed to publish order", http.StatusInternalServerError)
-		return
-	}
-
-	log.Printf("Order published: %s | %s %s %s @ %.2f Qty: %.2f", order.ID, order.Type, order.Side, order.Symbol, order.Price, order.Quantity)
+	log.Printf("Order accepted: %s | %s %s %s @ %s Qty: %s", order.ID, order.Type, order.Side, order.Symbol, money.MoneyToDecimal(order.Price), money.QuantityToDecimal(order.Quantity))
+	ordersCreatedTotal.Inc()
+	observability.OrdersTotal.Inc()
+	telemetry.Info("order_created", map[string]interface{}{
+		"request_id": telemetry.RequestIDFromContext(r.Context()),
+		"user_id":    order.UserID.String(),
+		"order_id":   order.ID.String(),
+		"symbol":     order.Symbol,
+		"side":       order.Side,
+	})
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(order)
 }
 
-func validateWithPortfolio(userID, symbol, side string, price, qty float64) (bool, error) {
+func orderActionHandler(w http.ResponseWriter, r *http.Request) {
+	httpRequestsTotal.Inc()
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	path := strings.TrimPrefix(r.URL.Path, "/orders/")
+	if !strings.HasSuffix(path, "/cancel") {
+		http.NotFound(w, r)
+		return
+	}
+
+	orderIDStr := strings.TrimSuffix(path, "/cancel")
+	orderIDStr = strings.TrimSuffix(orderIDStr, "/")
+	orderID, err := uuid.Parse(strings.TrimSpace(orderIDStr))
+	if err != nil {
+		http.Error(w, "invalid order_id", http.StatusBadRequest)
+		return
+	}
+
+	order, err := database.GetOrder(orderID)
+	if err != nil {
+		http.Error(w, "order not found", http.StatusNotFound)
+		return
+	}
+
+	userIDStr, ok := r.Context().Value(auth.UserIDKey).(string)
+	if !ok || order.UserID.String() != userIDStr {
+		http.Error(w, "forbidden: order belongs to another user", http.StatusForbidden)
+		return
+	}
+
+	if order.Status == model.Filled || order.Status == model.Cancelled || order.RemainingQuantity <= 0 {
+		http.Error(w, "order is not cancelable", http.StatusBadRequest)
+		return
+	}
+
+	if err := database.EnqueueCancelCommand(model.CancelRequest{
+		OrderID: order.ID,
+		UserID:  order.UserID,
+		Symbol:  order.Symbol,
+		Side:    order.Side,
+	}); err != nil {
+		http.Error(w, "failed to enqueue cancel request", http.StatusInternalServerError)
+		return
+	}
+	cancelRequestsTotal.Inc()
+	telemetry.Info("order_cancel_requested", map[string]interface{}{
+		"request_id": telemetry.RequestIDFromContext(r.Context()),
+		"user_id":    order.UserID.String(),
+		"order_id":   order.ID.String(),
+		"symbol":     order.Symbol,
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"order_id": order.ID.String(),
+		"status":   "cancel_requested",
+	})
+}
+
+func validateWithPortfolio(userID, symbol, side string, price money.Money, qty money.Quantity) (bool, error) {
+	start := time.Now()
+	defer portfolioCallDuration.Observe(time.Since(start))
+
 	url := fmt.Sprintf(
-		"http://portfolio-service:8081/validate?user_id=%s&symbol=%s&side=%s&price=%f&quantity=%f",
-		userID, symbol, side, price, qty,
+		"http://portfolio-service:8081/validate?user_id=%s&symbol=%s&side=%s&price=%s&quantity=%s",
+		userID, symbol, side, money.MoneyToDecimal(price), money.QuantityToDecimal(qty),
 	)
 
 	resp, err := portfolioClient.Get(url)
@@ -190,6 +316,9 @@ func rollbackReservation(order model.Order) error {
 }
 
 func callPortfolioReservation(path string, order model.Order) (int, string, error) {
+	start := time.Now()
+	defer portfolioCallDuration.Observe(time.Since(start))
+
 	reqBody := reservationRequest{
 		OrderID:        order.ID.String(),
 		UserID:         order.UserID.String(),
@@ -233,14 +362,15 @@ func callPortfolioReservation(path string, order model.Order) (int, string, erro
 	return resp.StatusCode, portfolioErr.Error, nil
 }
 
-func calculateReservedAmount(side model.Side, price, quantity float64) float64 {
+func calculateReservedAmount(side model.Side, price money.Money, quantity money.Quantity) (money.Money, error) {
 	if side == model.Buy {
-		return price * quantity
+		return money.CostFor(price, quantity)
 	}
-	return quantity
+	return money.Money(quantity), nil
 }
 
 func healthHandler(w http.ResponseWriter, _ *http.Request) {
+	httpRequestsTotal.Inc()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "service": "order-service"})
 }

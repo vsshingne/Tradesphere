@@ -1,0 +1,13 @@
+go 1.25.0
+
+use (
+	.
+	./pkg/auth
+	./pkg/money
+	./services/api-gateway
+	./services/matching-engine
+	./services/order-service
+	./services/portfolio-service
+	./services/user-service
+	./services/websocket-service
+)

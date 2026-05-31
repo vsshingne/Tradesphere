@@ -1,0 +1,38 @@
+{{- $services := list "apiGateway" "userService" "orderService" "portfolioService" "matchingEngine" "websocketService" -}}
+{{- range $svc := $services }}
+{{- $config := index $.Values $svc }}
+{{- if $config.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ kebabcase $svc }}-pdb
+spec:
+  {{- if $config.pdb.minAvailable }}
+  minAvailable: {{ $config.pdb.minAvailable }}
+  {{- end }}
+  {{- if $config.pdb.maxUnavailable }}
+  maxUnavailable: {{ $config.pdb.maxUnavailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app: {{ kebabcase $svc }}
+{{- end }}
+{{- end }}
+
+{{- $stateful := list "postgres" "kafka" "zookeeper" -}}
+{{- range $svc := $stateful }}
+{{- $config := index $.Values $svc }}
+{{- if $config.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ kebabcase $svc }}-pdb
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: {{ kebabcase $svc }}
+{{- end }}
+{{- end }}

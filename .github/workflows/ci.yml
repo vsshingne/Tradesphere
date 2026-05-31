@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  lint-go:
+    name: Lint Go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache-dependency-path: "**/go.sum"
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: pkg/observability
+          args: --timeout=5m
+          skip-cache: true
+      - name: golangci-lint services
+        run: |
+          for svc in api-gateway matching-engine order-service portfolio-service user-service websocket-service; do
+            echo "Linting $svc..."
+            cd services/$svc
+            golangci-lint run --timeout=5m
+            cd ../..
+          done
+
+  lint-frontend:
+    name: Lint Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        run: cd frontend && npm ci
+      - name: Lint
+        run: cd frontend && npm run lint
+
+  test-go:
+    name: Test Go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache-dependency-path: "**/go.sum"
+      - name: Test
+        run: |
+          # Test shared packages
+          cd pkg/observability && go test -v -cover ./... && cd ../..
+          # Test services
+          for svc in api-gateway matching-engine order-service portfolio-service user-service websocket-service; do
+            echo "Testing $svc..."
+            cd services/$svc
+            go test -v -cover ./...
+            cd ../..
+          done
+
+  build-scan:
+    name: Build & Security Scan
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service:
+          - api-gateway
+          - matching-engine
+          - order-service
+          - portfolio-service
+          - user-service
+          - websocket-service
+          - frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Determine Context
+        id: context
+        run: |
+          if [ "${{ matrix.service }}" = "frontend" ]; then
+            echo "path=frontend" >> $GITHUB_OUTPUT
+          else
+            echo "path=services/${{ matrix.service }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build Docker Image (Local)
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ steps.context.outputs.path }}
+          push: false
+          load: true
+          tags: tradesphere/${{ matrix.service }}:${{ github.sha }}
+
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'tradesphere/${{ matrix.service }}:${{ github.sha }}'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'

@@ -1,0 +1,154 @@
+name: CD
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  lint-go:
+    name: Lint Go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache-dependency-path: "**/go.sum"
+      - name: Install golangci-lint
+        run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.61.0
+      - name: golangci-lint
+        run: |
+          for dir in pkg/observability services/api-gateway services/matching-engine services/order-service services/portfolio-service services/user-service services/websocket-service; do
+            echo "Linting $dir..."
+            cd $dir
+            golangci-lint run --timeout=5m
+            cd -
+          done
+
+  lint-frontend:
+    name: Lint Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        run: cd frontend && npm ci
+      - name: Lint
+        run: cd frontend && npm run lint
+
+  test-go:
+    name: Test Go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache-dependency-path: "**/go.sum"
+      - name: Test
+        run: |
+          for dir in pkg/observability services/api-gateway services/matching-engine services/order-service services/portfolio-service services/user-service services/websocket-service; do
+            echo "Testing $dir..."
+            cd $dir
+            go test -v -cover ./...
+            cd -
+          done
+
+  build-scan-push:
+    name: Build, Scan & Push
+    runs-on: ubuntu-latest
+    needs: [lint-go, lint-frontend, test-go]
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        service:
+          - api-gateway
+          - matching-engine
+          - order-service
+          - portfolio-service
+          - user-service
+          - websocket-service
+          - frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Determine Context
+        id: context
+        run: |
+          if [ "${{ matrix.service }}" = "frontend" ]; then
+            echo "path=frontend" >> $GITHUB_OUTPUT
+          else
+            echo "path=services/${{ matrix.service }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build Docker Image (Local)
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ steps.context.outputs.path }}
+          push: false
+          load: true
+          tags: ghcr.io/${{ github.repository_owner }}/tradesphere-${{ matrix.service }}:${{ github.sha }}
+
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'ghcr.io/${{ github.repository_owner }}/tradesphere-${{ matrix.service }}:${{ github.sha }}'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Push Docker Image
+        run: docker push ghcr.io/${{ github.repository_owner }}/tradesphere-${{ matrix.service }}:${{ github.sha }}
+
+  deploy:
+    name: Deploy to Kubernetes
+    runs-on: ubuntu-latest
+    needs: build-scan-push
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: 'latest'
+
+      - name: Deploy
+        env:
+          KUBECONFIG_DATA: ${{ secrets.KUBECONFIG }}
+        run: |
+          mkdir -p ~/.kube
+          echo "$KUBECONFIG_DATA" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+          # Lowercase the repo owner for the image registry
+          REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+
+          helm upgrade --install tradesphere ./infra/helm/tradesphere \
+            --set frontend.image=ghcr.io/${REPO_OWNER}/tradesphere-frontend:${{ github.sha }} \
+            --set apiGateway.image=ghcr.io/${REPO_OWNER}/tradesphere-api-gateway:${{ github.sha }} \
+            --set userService.image=ghcr.io/${REPO_OWNER}/tradesphere-user-service:${{ github.sha }} \
+            --set orderService.image=ghcr.io/${REPO_OWNER}/tradesphere-order-service:${{ github.sha }} \
+            --set portfolioService.image=ghcr.io/${REPO_OWNER}/tradesphere-portfolio-service:${{ github.sha }} \
+            --set matchingEngine.image=ghcr.io/${REPO_OWNER}/tradesphere-matching-engine:${{ github.sha }} \
+            --set websocketService.image=ghcr.io/${REPO_OWNER}/tradesphere-websocket-service:${{ github.sha }}

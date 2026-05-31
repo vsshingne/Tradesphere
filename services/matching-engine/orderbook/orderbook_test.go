@@ -6,7 +6,28 @@ import (
 
 	"github.com/google/uuid"
 	"tradesphere/matching/model"
+	"tradesphere/money"
 )
+
+func mustMoney(t *testing.T, value string) money.Money {
+	t.Helper()
+
+	parsed, err := money.MoneyFromDecimal(value)
+	if err != nil {
+		t.Fatalf("parse money %s: %v", value, err)
+	}
+	return parsed
+}
+
+func mustQuantity(t *testing.T, value string) money.Quantity {
+	t.Helper()
+
+	parsed, err := money.QuantityFromDecimal(value)
+	if err != nil {
+		t.Fatalf("parse quantity %s: %v", value, err)
+	}
+	return parsed
+}
 
 func TestFullMatch(t *testing.T) {
 	ob := NewOrderBook()
@@ -16,9 +37,9 @@ func TestFullMatch(t *testing.T) {
 		UserID:            uuid.New(),
 		Symbol:            "BTC",
 		Side:              model.Buy,
-		Price:             50000,
-		Quantity:          1,
-		RemainingQuantity: 1,
+		Price:             mustMoney(t, "50000"),
+		Quantity:          mustQuantity(t, "1"),
+		RemainingQuantity: mustQuantity(t, "1"),
 		CreatedAt:         time.Now(),
 	}
 
@@ -27,9 +48,9 @@ func TestFullMatch(t *testing.T) {
 		UserID:            uuid.New(),
 		Symbol:            "BTC",
 		Side:              model.Sell,
-		Price:             49000,
-		Quantity:          1,
-		RemainingQuantity: 1,
+		Price:             mustMoney(t, "49000"),
+		Quantity:          mustQuantity(t, "1"),
+		RemainingQuantity: mustQuantity(t, "1"),
 		CreatedAt:         time.Now(),
 	}
 
@@ -40,8 +61,8 @@ func TestFullMatch(t *testing.T) {
 		t.Fatalf("Expected 1 trade, got %d", len(trades))
 	}
 
-	if trades[0].Quantity != 1 {
-		t.Fatalf("Expected trade quantity 1, got %f", trades[0].Quantity)
+	if trades[0].Quantity != mustQuantity(t, "1") {
+		t.Fatalf("Expected trade quantity 1, got %s", money.QuantityToDecimal(trades[0].Quantity))
 	}
 }
 
@@ -53,9 +74,9 @@ func TestPartialMatch(t *testing.T) {
 		UserID:            uuid.New(),
 		Symbol:            "BTC",
 		Side:              model.Buy,
-		Price:             50000,
-		Quantity:          2,
-		RemainingQuantity: 2,
+		Price:             mustMoney(t, "50000"),
+		Quantity:          mustQuantity(t, "2"),
+		RemainingQuantity: mustQuantity(t, "2"),
 		CreatedAt:         time.Now(),
 	}
 
@@ -64,9 +85,9 @@ func TestPartialMatch(t *testing.T) {
 		UserID:            uuid.New(),
 		Symbol:            "BTC",
 		Side:              model.Sell,
-		Price:             49000,
-		Quantity:          1,
-		RemainingQuantity: 1,
+		Price:             mustMoney(t, "49000"),
+		Quantity:          mustQuantity(t, "1"),
+		RemainingQuantity: mustQuantity(t, "1"),
 		CreatedAt:         time.Now(),
 	}
 
@@ -77,8 +98,8 @@ func TestPartialMatch(t *testing.T) {
 		t.Fatalf("Expected 1 trade, got %d", len(trades))
 	}
 
-	if buy.RemainingQuantity != 1 {
-		t.Fatalf("Expected remaining quantity 1, got %f", buy.RemainingQuantity)
+	if buy.RemainingQuantity != mustQuantity(t, "1") {
+		t.Fatalf("Expected remaining quantity 1, got %s", money.QuantityToDecimal(buy.RemainingQuantity))
 	}
 }
 
@@ -90,9 +111,9 @@ func TestNoMatch(t *testing.T) {
 		UserID:            uuid.New(),
 		Symbol:            "BTC",
 		Side:              model.Buy,
-		Price:             45000,
-		Quantity:          1,
-		RemainingQuantity: 1,
+		Price:             mustMoney(t, "45000"),
+		Quantity:          mustQuantity(t, "1"),
+		RemainingQuantity: mustQuantity(t, "1"),
 		CreatedAt:         time.Now(),
 	}
 
@@ -101,9 +122,9 @@ func TestNoMatch(t *testing.T) {
 		UserID:            uuid.New(),
 		Symbol:            "BTC",
 		Side:              model.Sell,
-		Price:             49000,
-		Quantity:          1,
-		RemainingQuantity: 1,
+		Price:             mustMoney(t, "49000"),
+		Quantity:          mustQuantity(t, "1"),
+		RemainingQuantity: mustQuantity(t, "1"),
 		CreatedAt:         time.Now(),
 	}
 
@@ -123,9 +144,9 @@ func TestIncomingSellUsesRestingBidPrice(t *testing.T) {
 		UserID:            uuid.New(),
 		Symbol:            "BTC",
 		Side:              model.Buy,
-		Price:             50000,
-		Quantity:          1,
-		RemainingQuantity: 1,
+		Price:             mustMoney(t, "50000"),
+		Quantity:          mustQuantity(t, "1"),
+		RemainingQuantity: mustQuantity(t, "1"),
 		CreatedAt:         time.Now().Add(-time.Second),
 	}
 
@@ -134,9 +155,9 @@ func TestIncomingSellUsesRestingBidPrice(t *testing.T) {
 		UserID:            uuid.New(),
 		Symbol:            "BTC",
 		Side:              model.Sell,
-		Price:             49000,
-		Quantity:          1,
-		RemainingQuantity: 1,
+		Price:             mustMoney(t, "49000"),
+		Quantity:          mustQuantity(t, "1"),
+		RemainingQuantity: mustQuantity(t, "1"),
 		CreatedAt:         time.Now(),
 	}
 
@@ -148,7 +169,7 @@ func TestIncomingSellUsesRestingBidPrice(t *testing.T) {
 	}
 
 	if trades[0].Price != restingBuy.Price {
-		t.Fatalf("Expected resting bid price %.2f, got %.2f", restingBuy.Price, trades[0].Price)
+		t.Fatalf("Expected resting bid price %s, got %s", money.MoneyToDecimal(restingBuy.Price), money.MoneyToDecimal(trades[0].Price))
 	}
 }
 
@@ -160,9 +181,9 @@ func TestPriceTimePriorityOnSamePrice(t *testing.T) {
 		UserID:            uuid.New(),
 		Symbol:            "BTC",
 		Side:              model.Sell,
-		Price:             49000,
-		Quantity:          1,
-		RemainingQuantity: 1,
+		Price:             mustMoney(t, "49000"),
+		Quantity:          mustQuantity(t, "1"),
+		RemainingQuantity: mustQuantity(t, "1"),
 		CreatedAt:         time.Now().Add(-2 * time.Second),
 	}
 
@@ -171,9 +192,9 @@ func TestPriceTimePriorityOnSamePrice(t *testing.T) {
 		UserID:            uuid.New(),
 		Symbol:            "BTC",
 		Side:              model.Sell,
-		Price:             49000,
-		Quantity:          1,
-		RemainingQuantity: 1,
+		Price:             mustMoney(t, "49000"),
+		Quantity:          mustQuantity(t, "1"),
+		RemainingQuantity: mustQuantity(t, "1"),
 		CreatedAt:         time.Now().Add(-time.Second),
 	}
 
@@ -182,9 +203,9 @@ func TestPriceTimePriorityOnSamePrice(t *testing.T) {
 		UserID:            uuid.New(),
 		Symbol:            "BTC",
 		Side:              model.Buy,
-		Price:             50000,
-		Quantity:          1,
-		RemainingQuantity: 1,
+		Price:             mustMoney(t, "50000"),
+		Quantity:          mustQuantity(t, "1"),
+		RemainingQuantity: mustQuantity(t, "1"),
 		CreatedAt:         time.Now(),
 	}
 

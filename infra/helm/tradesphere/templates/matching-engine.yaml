@@ -1,0 +1,71 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: matching-engine
+  labels:
+    app: matching-engine
+spec:
+  selector:
+    app: matching-engine
+  ports:
+    - port: 8082
+      targetPort: 8082
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: matching-engine
+  annotations:
+    tradesphere.io/scaling-strategy: "Scale replicas only alongside Kafka order-topic partitions; keep replicas <= partition count and preserve symbol-keyed routing."
+spec:
+  replicas: {{ .Values.matchingEngine.replicas }}
+  selector:
+    matchLabels:
+      app: matching-engine
+  template:
+    metadata:
+      labels:
+        app: matching-engine
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - matching-engine
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: matching-engine
+          image: {{ .Values.matchingEngine.image }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8082
+          envFrom:
+            - configMapRef:
+                name: tradesphere-config
+            - secretRef:
+                name: tradesphere-secret
+          env:
+            {{- range $key, $val := .Values.global.env }}
+            - name: {{ $key }}
+              value: {{ $val | quote }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8082
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8082
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.matchingEngine.resources | nindent 12 }}

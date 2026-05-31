@@ -9,11 +9,18 @@ import (
 	"os"
 	"time"
 
+	"tradesphere/money"
 	"tradesphere/portfolio/database"
 	"tradesphere/portfolio/model"
+	"tradesphere/portfolio/telemetry"
 
 	"github.com/google/uuid"
 	kafkago "github.com/segmentio/kafka-go"
+)
+
+var (
+	tradeEventsProcessedTotal = telemetry.Counter("trade_events_processed_total", "Total trade events processed by portfolio-service.")
+	orderEventsProcessedTotal = telemetry.Counter("order_events_processed_total", "Total order events processed by portfolio-service.")
 )
 
 type PortfolioService struct{}
@@ -21,16 +28,16 @@ type PortfolioService struct{}
 var portfolioService = PortfolioService{}
 
 type OrderEvent struct {
-	ID                uuid.UUID `json:"id"`
-	Type              string    `json:"type"`
-	OrderID           uuid.UUID `json:"order_id"`
-	UserID            uuid.UUID `json:"user_id"`
-	Symbol            string    `json:"symbol"`
-	Side              string    `json:"side"`
-	Status            string    `json:"status"`
-	RemainingQuantity float64   `json:"remaining_quantity"`
-	ReservedAmount    float64   `json:"reserved_amount"`
-	CreatedAt         time.Time `json:"created_at"`
+	ID                uuid.UUID      `json:"id"`
+	Type              string         `json:"type"`
+	OrderID           uuid.UUID      `json:"order_id"`
+	UserID            uuid.UUID      `json:"user_id"`
+	Symbol            string         `json:"symbol"`
+	Side              string         `json:"side"`
+	Status            string         `json:"status"`
+	RemainingQuantity money.Quantity `json:"remaining_quantity"`
+	ReservedAmount    money.Money    `json:"reserved_amount"`
+	CreatedAt         time.Time      `json:"created_at"`
 }
 
 func StartTradeConsumer(ctx context.Context) {
@@ -74,6 +81,12 @@ func StartTradeConsumer(ctx context.Context) {
 		}
 
 		if processed {
+			tradeEventsProcessedTotal.Inc()
+			telemetry.Info("trade_applied", map[string]interface{}{
+				"trade_id":  trade.ID.String(),
+				"buyer_id":  trade.BuyerUserID.String(),
+				"seller_id": trade.SellerUserID.String(),
+			})
 			log.Println("Processed trade:", trade.ID)
 		} else {
 			log.Println("Skipped duplicate trade:", trade.ID)
@@ -123,6 +136,12 @@ func StartOrderEventConsumer(ctx context.Context) {
 		}
 
 		if processed {
+			orderEventsProcessedTotal.Inc()
+			telemetry.Info("order_event_applied", map[string]interface{}{
+				"order_id": event.OrderID.String(),
+				"user_id":  event.UserID.String(),
+				"type":     event.Type,
+			})
 			log.Println("Processed order event:", event.ID)
 		} else {
 			log.Println("Skipped duplicate order event:", event.ID)

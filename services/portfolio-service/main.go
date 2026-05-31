@@ -7,29 +7,45 @@ import (
 	"log"
 	"net/http"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"tradesphere/money"
 	"tradesphere/portfolio/database"
 	"tradesphere/portfolio/kafka"
+	"tradesphere/portfolio/telemetry"
 
+	"tradesphere/auth"
+	"tradesphere/observability"
+	"golang.org/x/time/rate"
 	"github.com/google/uuid"
 )
 
 type Position struct {
-	Symbol   string  `json:"symbol"`
-	Quantity float64 `json:"quantity"`
+	Symbol   string         `json:"symbol"`
+	Quantity money.Quantity `json:"quantity"`
 }
+
+var (
+	httpRequestsTotal  = telemetry.Counter("http_requests_total", "Total HTTP requests handled by portfolio-service.")
+	reservationsTotal  = telemetry.Counter("reservations_total", "Total successful reservations handled by portfolio-service.")
+	releasesTotal      = telemetry.Counter("releases_total", "Total successful reservation releases handled by portfolio-service.")
+	validationDuration = telemetry.Duration("validation_duration_seconds", "Duration of validation requests in portfolio-service.")
+)
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	database.InitDB()
+	
+	shutdown := observability.Init("portfolio-service")
+	defer shutdown(context.Background())
+
 	go kafka.StartTradeConsumer(ctx)
 	go kafka.StartOrderEventConsumer(ctx)
+	go startReconciliationWorker(ctx)
 
 	startHTTPServer(ctx)
 }
@@ -40,9 +56,19 @@ func startHTTPServer(ctx context.Context) {
 	mux.HandleFunc("/validate", validateHandler)
 	mux.HandleFunc("/reserve", reserveHandler)
 	mux.HandleFunc("/release", releaseHandler)
-	mux.HandleFunc("/portfolio/", portfolioHandler)
 
-	srv := &http.Server{Addr: ":8081", Handler: mux}
+	authMiddleware := func(next http.Handler) http.Handler {
+		return auth.RateLimit(rate.Limit(10), 20)(auth.RequireAuth("user")(next))
+	}
+	mux.Handle("/portfolio/", authMiddleware(http.HandlerFunc(portfolioHandler)))
+
+	mux.Handle("/metrics", observability.MetricsHandler())
+	mux.Handle("/internal-metrics", telemetry.Handler()) // keep existing one
+
+	// Wrap with observability middleware
+	handler := observability.HTTPMiddleware(telemetry.RequestIDMiddleware(mux))
+
+	srv := &http.Server{Addr: ":8081", Handler: handler}
 
 	go func() {
 		<-ctx.Done()
@@ -63,6 +89,7 @@ func startHTTPServer(ctx context.Context) {
 }
 
 func healthHandler(w http.ResponseWriter, _ *http.Request) {
+	httpRequestsTotal.Inc()
 	if err := database.DB.Ping(); err != nil {
 		writeJSONError(w, "db unreachable", http.StatusInternalServerError)
 		return
@@ -72,6 +99,7 @@ func healthHandler(w http.ResponseWriter, _ *http.Request) {
 }
 
 func portfolioHandler(w http.ResponseWriter, r *http.Request) {
+	httpRequestsTotal.Inc()
 	path := strings.TrimPrefix(r.URL.Path, "/portfolio/")
 	parts := strings.Split(path, "/")
 	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
@@ -80,6 +108,12 @@ func portfolioHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID := parts[0]
+	userIDStr, ok := r.Context().Value(auth.UserIDKey).(string)
+	if !ok || userID != userIDStr {
+		http.Error(w, "forbidden: cannot view other user's portfolio", http.StatusForbidden)
+		return
+	}
+
 	if len(parts) == 1 {
 		getFullPortfolio(w, userID)
 		return
@@ -99,7 +133,7 @@ func portfolioHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func getBalance(w http.ResponseWriter, userID string) {
-	var balance float64
+	var balance int64
 	err := database.DB.QueryRow("SELECT balance FROM users WHERE id = $1", userID).Scan(&balance)
 	if err != nil {
 		http.Error(w, "User not found", http.StatusNotFound)
@@ -107,7 +141,7 @@ func getBalance(w http.ResponseWriter, userID string) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"user_id": userID, "balance": balance})
+	json.NewEncoder(w).Encode(map[string]interface{}{"user_id": userID, "balance": money.Money(balance)})
 }
 
 func getPositions(w http.ResponseWriter, userID string) {
@@ -121,10 +155,12 @@ func getPositions(w http.ResponseWriter, userID string) {
 	positions := make([]Position, 0)
 	for rows.Next() {
 		var p Position
-		if err := rows.Scan(&p.Symbol, &p.Quantity); err != nil {
+		var quantity int64
+		if err := rows.Scan(&p.Symbol, &quantity); err != nil {
 			http.Error(w, "Error scanning positions", http.StatusInternalServerError)
 			return
 		}
+		p.Quantity = money.Quantity(quantity)
 		positions = append(positions, p)
 	}
 	if err := rows.Err(); err != nil {
@@ -137,7 +173,7 @@ func getPositions(w http.ResponseWriter, userID string) {
 }
 
 func getFullPortfolio(w http.ResponseWriter, userID string) {
-	var balance float64
+	var balance int64
 	err := database.DB.QueryRow("SELECT balance FROM users WHERE id = $1", userID).Scan(&balance)
 	if err != nil {
 		http.Error(w, "User not found", http.StatusNotFound)
@@ -154,10 +190,12 @@ func getFullPortfolio(w http.ResponseWriter, userID string) {
 	positions := make([]Position, 0)
 	for rows.Next() {
 		var p Position
-		if err := rows.Scan(&p.Symbol, &p.Quantity); err != nil {
+		var quantity int64
+		if err := rows.Scan(&p.Symbol, &quantity); err != nil {
 			http.Error(w, "Error scanning positions", http.StatusInternalServerError)
 			return
 		}
+		p.Quantity = money.Quantity(quantity)
 		positions = append(positions, p)
 	}
 	if err := rows.Err(); err != nil {
@@ -168,12 +206,16 @@ func getFullPortfolio(w http.ResponseWriter, userID string) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"user_id":   userID,
-		"balance":   balance,
+		"balance":   money.Money(balance),
 		"positions": positions,
 	})
 }
 
 func validateHandler(w http.ResponseWriter, r *http.Request) {
+	httpRequestsTotal.Inc()
+	start := time.Now()
+	defer validationDuration.Observe(time.Since(start))
+
 	w.Header().Set("Content-Type", "application/json")
 
 	userID := r.URL.Query().Get("user_id")
@@ -193,14 +235,14 @@ func validateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	price, err := strconv.ParseFloat(priceStr, 64)
+	price, err := money.MoneyFromDecimal(priceStr)
 	if err != nil || price <= 0 {
 		log.Printf("Validation failed: invalid price=%q", priceStr)
 		writeJSONError(w, "invalid price", http.StatusBadRequest)
 		return
 	}
 
-	qty, err := strconv.ParseFloat(qtyStr, 64)
+	qty, err := money.QuantityFromDecimal(qtyStr)
 	if err != nil || qty <= 0 {
 		log.Printf("Validation failed: invalid quantity=%q", qtyStr)
 		writeJSONError(w, "invalid quantity", http.StatusBadRequest)
@@ -211,7 +253,7 @@ func validateHandler(w http.ResponseWriter, r *http.Request) {
 
 	switch side {
 	case "BUY":
-		var balance, reserved float64
+		var balance, reserved int64
 		err := database.DB.QueryRow(
 			`SELECT balance, reserved_balance FROM users WHERE id = $1`,
 			userID,
@@ -220,12 +262,13 @@ func validateHandler(w http.ResponseWriter, r *http.Request) {
 		if err == sql.ErrNoRows {
 			log.Printf("Validation failed: user not found user_id=%s", userID)
 		}
-		if err == nil && balance-reserved >= price*qty {
+		cost, costErr := money.CostFor(price, qty)
+		if costErr == nil && err == nil && money.Money(balance)-money.Money(reserved) >= cost {
 			allowed = true
 		}
 
 	case "SELL":
-		var position, reserved float64
+		var position, reserved int64
 		err := database.DB.QueryRow(
 			`SELECT quantity, reserved_quantity FROM positions WHERE user_id = $1 AND symbol = $2`,
 			userID, symbol,
@@ -234,7 +277,7 @@ func validateHandler(w http.ResponseWriter, r *http.Request) {
 		if err == sql.ErrNoRows {
 			log.Printf("Validation failed: position not found user_id=%s symbol=%s", userID, symbol)
 		}
-		if err == nil && position-reserved >= qty {
+		if err == nil && money.Quantity(position)-money.Quantity(reserved) >= qty {
 			allowed = true
 		}
 
@@ -256,6 +299,7 @@ func writeJSONError(w http.ResponseWriter, message string, statusCode int) {
 }
 
 func reserveHandler(w http.ResponseWriter, r *http.Request) {
+	httpRequestsTotal.Inc()
 	if r.Method != http.MethodPost {
 		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -263,13 +307,13 @@ func reserveHandler(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	var req struct {
-		OrderID        string  `json:"order_id,omitempty"`
-		UserID         string  `json:"user_id"`
-		Symbol         string  `json:"symbol"`
-		Side           string  `json:"side"`
-		Price          float64 `json:"price"`
-		Quantity       float64 `json:"quantity"`
-		ReservedAmount float64 `json:"reserved_amount"`
+		OrderID        string         `json:"order_id,omitempty"`
+		UserID         string         `json:"user_id"`
+		Symbol         string         `json:"symbol"`
+		Side           string         `json:"side"`
+		Price          money.Money    `json:"price"`
+		Quantity       money.Quantity `json:"quantity"`
+		ReservedAmount money.Money    `json:"reserved_amount"`
 	}
 
 	err := json.NewDecoder(r.Body).Decode(&req)
@@ -291,7 +335,7 @@ func reserveHandler(w http.ResponseWriter, r *http.Request) {
 
 	if req.Side == "BUY" {
 
-		var balance, reserved float64
+		var balance, reserved int64
 
 		err := tx.QueryRow(`
 		SELECT balance, reserved_balance
@@ -308,12 +352,18 @@ func reserveHandler(w http.ResponseWriter, r *http.Request) {
 
 		cost := req.ReservedAmount
 		if cost <= 0 {
-			cost = req.Price * req.Quantity
+			cost, err = money.CostFor(req.Price, req.Quantity)
+			if err != nil {
+				tx.Rollback()
+				writeJSONError(w, "price and quantity cannot be represented exactly", http.StatusBadRequest)
+				return
+			}
 		}
-		available := balance - reserved
+		available := money.Money(balance) - money.Money(reserved)
 
 		if available < cost {
 			tx.Rollback()
+			observability.ReservationFailuresTotal.Inc()
 			writeJSONError(w, "insufficient balance", http.StatusBadRequest)
 			return
 		}
@@ -332,7 +382,7 @@ func reserveHandler(w http.ResponseWriter, r *http.Request) {
 
 	} else {
 
-		var qty, reserved float64
+		var qty, reserved int64
 
 		err := tx.QueryRow(`
 		SELECT quantity, reserved_quantity
@@ -347,14 +397,15 @@ func reserveHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		available := qty - reserved
+		available := money.Quantity(qty) - money.Quantity(reserved)
 
-		releaseQty := req.ReservedAmount
+		releaseQty := money.Quantity(req.ReservedAmount)
 		if releaseQty <= 0 {
 			releaseQty = req.Quantity
 		}
 		if available < releaseQty {
 			tx.Rollback()
+			observability.ReservationFailuresTotal.Inc()
 			writeJSONError(w, "insufficient position", http.StatusBadRequest)
 			return
 		}
@@ -379,9 +430,11 @@ func reserveHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"status":"reserved"}`))
+	reservationsTotal.Inc()
 }
 
 func releaseHandler(w http.ResponseWriter, r *http.Request) {
+	httpRequestsTotal.Inc()
 	if r.Method != http.MethodPost {
 		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -389,13 +442,13 @@ func releaseHandler(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	var req struct {
-		OrderID        string  `json:"order_id,omitempty"`
-		UserID         string  `json:"user_id"`
-		Symbol         string  `json:"symbol"`
-		Side           string  `json:"side"`
-		Price          float64 `json:"price"`
-		Quantity       float64 `json:"quantity"`
-		ReservedAmount float64 `json:"reserved_amount"`
+		OrderID        string         `json:"order_id,omitempty"`
+		UserID         string         `json:"user_id"`
+		Symbol         string         `json:"symbol"`
+		Side           string         `json:"side"`
+		Price          money.Money    `json:"price"`
+		Quantity       money.Quantity `json:"quantity"`
+		ReservedAmount money.Money    `json:"reserved_amount"`
 	}
 
 	err := json.NewDecoder(r.Body).Decode(&req)
@@ -416,7 +469,7 @@ func releaseHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Side == "BUY" {
-		var reserved float64
+		var reserved int64
 		err := tx.QueryRow(`
 		SELECT reserved_balance
 		FROM users
@@ -431,7 +484,12 @@ func releaseHandler(w http.ResponseWriter, r *http.Request) {
 
 		cost := req.ReservedAmount
 		if cost <= 0 {
-			cost = req.Price * req.Quantity
+			cost, err = money.CostFor(req.Price, req.Quantity)
+			if err != nil {
+				tx.Rollback()
+				writeJSONError(w, "price and quantity cannot be represented exactly", http.StatusBadRequest)
+				return
+			}
 		}
 		if req.OrderID != "" {
 			orderID, parseErr := uuid.Parse(req.OrderID)
@@ -455,7 +513,7 @@ func releaseHandler(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		if reserved < cost {
+		if money.Money(reserved) < cost {
 			tx.Rollback()
 			writeJSONError(w, "insufficient reserved balance", http.StatusBadRequest)
 			return
@@ -472,8 +530,8 @@ func releaseHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		var reserved float64
-		orderReleaseQty := req.ReservedAmount
+		var reserved int64
+		orderReleaseQty := money.Quantity(req.ReservedAmount)
 		err := tx.QueryRow(`
 		SELECT reserved_quantity
 		FROM positions
@@ -495,7 +553,7 @@ func releaseHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			row, orderErr := database.LockOrderReservation(tx, orderID)
 			if orderErr == nil {
-				orderReleaseQty = row.ReservedAmount
+				orderReleaseQty = money.Quantity(row.ReservedAmount)
 				_, err = tx.Exec(`
 				UPDATE orders
 				SET reserved_amount = 0
@@ -511,7 +569,7 @@ func releaseHandler(w http.ResponseWriter, r *http.Request) {
 		if orderReleaseQty <= 0 {
 			orderReleaseQty = req.Quantity
 		}
-		if reserved < orderReleaseQty {
+		if money.Quantity(reserved) < orderReleaseQty {
 			tx.Rollback()
 			writeJSONError(w, "insufficient reserved quantity", http.StatusBadRequest)
 			return
@@ -536,4 +594,5 @@ func releaseHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"status":"released"}`))
+	releasesTotal.Inc()
 }
