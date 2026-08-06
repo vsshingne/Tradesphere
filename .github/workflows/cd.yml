@@ -11,6 +11,9 @@ env:
   GAR_REPOSITORY: tradesphere
   GKE_CLUSTER: ${{ secrets.GKE_CLUSTER_NAME || 'tradesphere-prod' }}
   K8S_NAMESPACE: tradesphere
+  GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+  GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+  GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
 
 jobs:
   lint-go:
@@ -114,7 +117,7 @@ jobs:
       # Falls back to service account key if WIF not configured
       - name: Authenticate to Google Cloud (WIF)
         id: auth-wif
-        if: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER != '' && secrets.GCP_SERVICE_ACCOUNT != '' }}
+        if: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER != '' && env.GCP_SERVICE_ACCOUNT != '' }}
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
@@ -123,7 +126,7 @@ jobs:
 
       - name: Authenticate via Service Account Key (fallback)
         id: auth-key
-        if: ${{ secrets.GCP_SA_KEY != '' && steps.auth-wif.outcome != 'success' }}
+        if: ${{ env.GCP_SA_KEY != '' && steps.auth-wif.outcome != 'success' }}
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
@@ -179,7 +182,7 @@ jobs:
     name: Deploy to GKE
     runs-on: ubuntu-latest
     needs: build-scan-push
-    if: ${{ secrets.GCP_PROJECT_ID != '' && (secrets.GCP_WORKLOAD_IDENTITY_PROVIDER != '' || secrets.GCP_SA_KEY != '') }}
+    if: ${{ env.GCP_PROJECT_ID != '' && (env.GCP_WORKLOAD_IDENTITY_PROVIDER != '' || env.GCP_SA_KEY != '') }}
     permissions:
       contents: read
       id-token: write
@@ -190,7 +193,7 @@ jobs:
 
       - name: Authenticate to Google Cloud (WIF)
         id: auth-wif
-        if: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER != '' && secrets.GCP_SERVICE_ACCOUNT != '' }}
+        if: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER != '' && env.GCP_SERVICE_ACCOUNT != '' }}
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
@@ -199,7 +202,7 @@ jobs:
 
       - name: Authenticate via Service Account Key (fallback)
         id: auth-key
-        if: ${{ secrets.GCP_SA_KEY != '' && steps.auth-wif.outcome != 'success' }}
+        if: ${{ env.GCP_SA_KEY != '' && steps.auth-wif.outcome != 'success' }}
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
