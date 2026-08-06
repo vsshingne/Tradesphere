@@ -15,7 +15,6 @@ import {
   Target,
   ArrowRight
 } from "lucide-react";
-import { useAuthStore } from "@/lib/store";
 
 const navItems = [
   { name: "Dashboard", href: "/dashboard", icon: LayoutDashboard },

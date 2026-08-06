@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useMutation } from "@tanstack/react-query";
+import { AxiosError } from "axios";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -26,7 +27,7 @@ export default function SignupPage() {
       toast.success("Account created successfully! Please login.");
       router.push("/login");
     },
-    onError: (error: any) => {
+    onError: (error: AxiosError<{ error?: string }>) => {
       toast.error(error.response?.data?.error || "Signup failed");
     },
   });

@@ -3,7 +3,7 @@
 import { useTheme } from "next-themes";
 import { Search, Sun, Moon, Bell, LogOut, User as UserIcon, Settings } from "lucide-react";
 import { useAuthStore } from "@/lib/store";
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -14,14 +14,16 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
+const emptySubscribe = () => () => {};
+
 export default function TopHeader() {
   const { theme, setTheme } = useTheme();
   const { user, logout } = useAuthStore();
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
+  const mounted = useSyncExternalStore(
+    emptySubscribe,
+    () => true,
+    () => false
+  );
 
   return (
     <header className="h-16 border-b border-border bg-background flex items-center justify-between px-6 sticky top-0 z-10 ml-64">

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useMutation } from "@tanstack/react-query";
+import { AxiosError } from "axios";
 import { useAuthStore } from "@/lib/store";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -39,7 +40,7 @@ export default function LoginPage() {
       toast.success("Login successful!");
       router.push("/dashboard");
     },
-    onError: (error: any) => {
+    onError: (error: AxiosError<{ error?: string }>) => {
       toast.error(error.response?.data?.error || "Login failed");
     },
   });
@@ -88,7 +89,7 @@ export default function LoginPage() {
         </CardContent>
         <CardFooter className="flex justify-center">
           <p className="text-sm text-muted-foreground">
-            Don't have an account?{" "}
+            Don&apos;t have an account?{" "}
             <Link href="/signup" className="text-primary hover:underline">
               Sign up
             </Link>

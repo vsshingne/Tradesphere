@@ -2,6 +2,7 @@
 
 import { useAuthStore } from "@/lib/store";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { AxiosError } from "axios";
 import api from "@/lib/api";
 import { formatMoney, formatQuantity, cn } from "@/lib/utils";
 import { useWebSocket, Side } from "@/lib/useWebSocket";
@@ -12,9 +13,22 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "sonner";
-import { Loader2, TrendingUp, TrendingDown, Clock, Activity, Briefcase, Wallet } from "lucide-react";
-import { useState, useEffect } from "react";
-import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
+import { Loader2, Clock, Activity, Wallet } from "lucide-react";
+import { useState } from "react";
+import { AreaChart, Area, YAxis, Tooltip, ResponsiveContainer } from "recharts";
+
+interface Position {
+  symbol: string;
+  quantity: string | number;
+  reserved_quantity?: string | number;
+}
+
+interface Portfolio {
+  balance?: string | number;
+  positions?: Position[];
+}
+
+type OrderType = "MARKET" | "LIMIT" | "SL-LIMIT" | "BRACKET";
 
 // Mock Chart Data
 const chartData = Array.from({ length: 50 }).map((_, i) => {
@@ -39,19 +53,19 @@ const watchlistItems = [
 export default function DashboardPage() {
   const { user } = useAuthStore();
   const queryClient = useQueryClient();
-  const { isConnected, trades, openOrders, bids, asks } = useWebSocket();
+  const { trades, openOrders } = useWebSocket();
 
-  const [side, setSide] = useState<"BUY" | "SELL">("BUY");
-  const [type, setType] = useState<"LIMIT" | "MARKET">("LIMIT");
+  const [side, setSide] = useState<Side>("BUY");
+  const [type, setType] = useState<OrderType>("LIMIT");
   const [price, setPrice] = useState("50000");
   const [quantity, setQuantity] = useState("1");
   const [selectedSymbol, setSelectedSymbol] = useState("BTC");
 
-  const { data: portfolio } = useQuery({
+  const { data: portfolio } = useQuery<Portfolio | null>({
     queryKey: ["portfolio", user?.id],
     queryFn: async () => {
       if (!user?.id) return null;
-      const res = await api.get(`/portfolio/${user.id}`);
+      const res = await api.get<Portfolio>(`/portfolio/${user.id}`);
       return res.data;
     },
     enabled: !!user?.id,
@@ -73,7 +87,7 @@ export default function DashboardPage() {
       toast.success(`${side} order placed successfully!`);
       queryClient.invalidateQueries({ queryKey: ["portfolio", user?.id] });
     },
-    onError: (error: any) => {
+    onError: (error: AxiosError<{ error?: string }>) => {
       toast.error(error.response?.data?.error || "Failed to place order");
     },
   });
@@ -86,7 +100,7 @@ export default function DashboardPage() {
     onSuccess: () => {
       toast.success("Order canceled");
     },
-    onError: (error: any) => {
+    onError: (error: AxiosError<{ error?: string }>) => {
       toast.error(error.response?.data?.error || "Failed to cancel order");
     },
   });
@@ -97,14 +111,7 @@ export default function DashboardPage() {
     orderMutation.mutate();
   };
 
-  const getAssetBalance = (sym: string) => {
-    if (!portfolio?.positions) return "0";
-    const pos = portfolio.positions.find((p: any) => p.symbol === sym);
-    return pos ? formatQuantity(pos.quantity) : "0";
-  };
-
-  const sortedBids = Object.entries(bids).sort((a, b) => parseFloat(b[0]) - parseFloat(a[0]));
-  const sortedAsks = Object.entries(asks).sort((a, b) => parseFloat(a[0]) - parseFloat(b[0]));
+  const orderTypes: OrderType[] = ["MARKET", "LIMIT", "SL-LIMIT", "BRACKET"];
 
   return (
     <div className="flex flex-col gap-4 h-full">
@@ -112,7 +119,7 @@ export default function DashboardPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-foreground">Welcome back, {user?.email ? user.email.split('@')[0] : "VS Prime"}! 👋</h1>
-          <p className="text-sm text-muted-foreground mt-1">Here's what's happening in the markets today.</p>
+          <p className="text-sm text-muted-foreground mt-1">Here&apos;s what&apos;s happening in the markets today.</p>
         </div>
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2 bg-card border border-border rounded-lg px-4 py-2">
@@ -182,7 +189,7 @@ export default function DashboardPage() {
             </Card>
             <Card className="bg-card">
               <CardContent className="p-4 space-y-1">
-                <p className="text-xs text-muted-foreground">Today's P&L</p>
+                <p className="text-xs text-muted-foreground">Today&apos;s P&amp;L</p>
                 <p className="text-xl font-bold">₹12,540.75</p>
                 <p className="text-xs text-primary">+1.89%</p>
               </CardContent>
@@ -224,11 +231,11 @@ export default function DashboardPage() {
                       <TableHead>Qty</TableHead>
                       <TableHead>Avg Price</TableHead>
                       <TableHead>LTP</TableHead>
-                      <TableHead>P&L</TableHead>
+                      <TableHead>P&amp;L</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {portfolio?.positions?.map((pos: any) => (
+                    {portfolio?.positions?.map((pos) => (
                       <TableRow key={pos.symbol}>
                         <TableCell className="font-medium">{pos.symbol}</TableCell>
                         <TableCell>{formatQuantity(pos.quantity)}</TableCell>
@@ -339,13 +346,13 @@ export default function DashboardPage() {
             </CardHeader>
             <CardContent className="p-4 space-y-4">
               <div className="flex gap-2">
-                {["MARKET", "LIMIT", "SL-LIMIT", "BRACKET"].map((t) => (
+                {orderTypes.map((t) => (
                   <Button 
                     key={t}
                     variant={type === t ? "default" : "outline"}
                     size="sm"
                     className={cn("flex-1 text-xs h-8", type === t && side === "BUY" ? "bg-primary text-primary-foreground hover:bg-primary/90" : type === t && side === "SELL" ? "bg-destructive text-destructive-foreground hover:bg-destructive/90" : "")}
-                    onClick={() => setType(t as any)}
+                    onClick={() => setType(t)}
                   >
                     {t}
                   </Button>
