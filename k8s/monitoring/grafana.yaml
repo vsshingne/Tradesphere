@@ -1,0 +1,148 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: tradesphere
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+    - name: Prometheus
+      type: prometheus
+      url: http://prometheus:9090
+      access: proxy
+      isDefault: true
+    - name: Loki
+      type: loki
+      url: http://loki:3100
+      access: proxy
+    - name: Jaeger
+      type: jaeger
+      url: http://jaeger:16686
+      access: proxy
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provider
+  namespace: tradesphere
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+    - name: 'TradeSphere'
+      orgId: 1
+      folder: ''
+      type: file
+      disableDeletion: false
+      editable: true
+      options:
+        path: /var/lib/grafana/dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: tradesphere
+data:
+  trading-dashboard.json: |
+    {
+      "title": "TradeSphere Overview",
+      "panels": [
+        {
+          "title": "Orders / Sec",
+          "type": "timeseries",
+          "targets": [
+            { "expr": "rate(tradesphere_orders_total[1m])", "legendFormat": "Orders" }
+          ],
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
+        },
+        {
+          "title": "Trades / Sec",
+          "type": "timeseries",
+          "targets": [
+            { "expr": "rate(tradesphere_trades_total[1m])", "legendFormat": "Trades" }
+          ],
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
+        },
+        {
+          "title": "Active WebSocket Clients",
+          "type": "stat",
+          "targets": [
+            { "expr": "sum(tradesphere_websocket_clients_active)", "legendFormat": "Clients" }
+          ],
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }
+        },
+        {
+          "title": "DB Latency (99th)",
+          "type": "timeseries",
+          "targets": [
+            { "expr": "histogram_quantile(0.99, sum(rate(tradesphere_db_query_duration_seconds_bucket[1m])) by (le))", "legendFormat": "Latency" }
+          ],
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 }
+        }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: tradesphere
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:10.2.0
+          ports:
+            - containerPort: 3000
+          env:
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: tradesphere-secret
+                  key: POSTGRES_PASSWORD
+          volumeMounts:
+            - name: grafana-datasources
+              mountPath: /etc/grafana/provisioning/datasources
+            - name: grafana-dashboard-provider
+              mountPath: /etc/grafana/provisioning/dashboards
+            - name: grafana-dashboards
+              mountPath: /var/lib/grafana/dashboards
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+      volumes:
+        - name: grafana-datasources
+          configMap:
+            name: grafana-datasources
+        - name: grafana-dashboard-provider
+          configMap:
+            name: grafana-dashboard-provider
+        - name: grafana-dashboards
+          configMap:
+            name: grafana-dashboards
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: tradesphere
+spec:
+  selector:
+    app: grafana
+  ports:
+    - port: 3000
+      targetPort: 3000

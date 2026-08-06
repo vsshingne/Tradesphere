@@ -1,15 +1,15 @@
--- =====================================================
+--  
 -- EXTENSIONS
--- =====================================================
+--  
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- =====================================================
+--  
 -- USERS
 -- Monetary values stored in smallest unit
 -- Example:
 -- ₹100.25 = 10025 paise
--- =====================================================
+--  
 
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY,
@@ -30,9 +30,9 @@ CREATE TABLE IF NOT EXISTS users (
         CHECK (reserved_balance >= 0)
 );
 
--- =====================================================
+--  
 -- REFRESH TOKENS
--- =====================================================
+--  
 
 CREATE TABLE IF NOT EXISTS refresh_tokens (
     id UUID PRIMARY KEY,
@@ -51,11 +51,11 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_id ON refresh_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_hash ON refresh_tokens(token_hash);
 
--- =====================================================
+--  
 -- POSITIONS
 -- Quantity uses fixed precision:
 -- 1.5 => 150000000
--- =====================================================
+--  
 
 CREATE TABLE IF NOT EXISTS positions (
     user_id UUID NOT NULL,
@@ -78,11 +78,11 @@ CREATE TABLE IF NOT EXISTS positions (
         CHECK (reserved_quantity >= 0)
 );
 
--- =====================================================
+--  
 -- ORDERS
 -- price stored in paise
 -- quantity stored in precision units
--- =====================================================
+--  
 
 CREATE TABLE IF NOT EXISTS orders (
     id UUID PRIMARY KEY,
@@ -153,9 +153,9 @@ ON orders(symbol);
 CREATE INDEX IF NOT EXISTS idx_orders_status
 ON orders(status);
 
--- =====================================================
+--  
 -- TRADES
--- =====================================================
+--  
 
 CREATE TABLE IF NOT EXISTS trades (
     id UUID PRIMARY KEY,
@@ -202,9 +202,9 @@ ON trades(symbol);
 CREATE INDEX IF NOT EXISTS idx_trades_executed_at
 ON trades(executed_at);
 
--- =====================================================
+--  
 -- ORDER OUTBOX
--- =====================================================
+--  
 
 CREATE TABLE IF NOT EXISTS order_outbox (
     id UUID PRIMARY KEY,
@@ -228,9 +228,9 @@ ON order_outbox(published_at, created_at);
 CREATE INDEX IF NOT EXISTS idx_order_outbox_publishable
     ON order_outbox (published_at, next_attempt_at, created_at);
 
--- =====================================================
+--  
 -- TRADE OUTBOX
--- =====================================================
+--  
 
 CREATE TABLE IF NOT EXISTS trade_outbox (
     id UUID PRIMARY KEY,
@@ -254,9 +254,9 @@ ON trade_outbox(published_at, created_at);
 CREATE INDEX IF NOT EXISTS idx_trade_outbox_publishable
     ON trade_outbox (published_at, next_attempt_at, created_at);
 
--- =====================================================
+--  
 -- IDEMPOTENCY
--- =====================================================
+--  
 
 CREATE TABLE IF NOT EXISTS processed_events (
     consumer_group TEXT NOT NULL,
@@ -270,10 +270,10 @@ CREATE TABLE IF NOT EXISTS processed_events (
     )
 );
 
--- =====================================================
+--  
 -- SEED USERS
 -- 10000000 = ₹100000.00
--- =====================================================
+--  
 
 INSERT INTO users (
     id,

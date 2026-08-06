@@ -1,0 +1,82 @@
+{
+  "id": null,
+  "uid": "tradesphere-db",
+  "title": "TradeSphere — Database Dashboard",
+  "description": "PostgreSQL query duration, query rates, transactional outbox publish latency and attempts",
+  "tags": ["tradesphere", "postgres", "database"],
+  "timezone": "browser",
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "DB Query Duration — P50 / P95 / P99",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": { "unit": "s" }
+      },
+      "targets": [
+        {
+          "expr": "job:tradesphere_db_p50:5m",
+          "legendFormat": "P50 {{ service }}"
+        },
+        {
+          "expr": "job:tradesphere_db_p95:5m",
+          "legendFormat": "P95 {{ service }}"
+        },
+        {
+          "expr": "job:tradesphere_db_p99:5m",
+          "legendFormat": "P99 {{ service }}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "DB Queries per Second by Service",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(tradesphere_db_query_duration_seconds_count[5m])) by (service)",
+          "legendFormat": "{{ service }}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Transactional Outbox Publish Latency (P99)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": {
+        "defaults": { "unit": "s" }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(tradesphere_outbox_publish_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "P99 Outbox Publish Latency"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Transactional Outbox Retry Attempts",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": {
+        "defaults": { "unit": "short" }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(tradesphere_outbox_publish_attempts_total[5m])) by (topic)",
+          "legendFormat": "{{ topic }}"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 36,
+  "version": 1
+}

@@ -233,3 +233,7 @@ frontend:
     limits:
       cpu: 500m
       memory: 512Mi
+
+networkPolicy:
+  enabled: false # Set to true in hardened environments
+

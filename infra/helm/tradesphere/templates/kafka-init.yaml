@@ -1,0 +1,43 @@
+{{- if .Values.kafka.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-init
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "5"
+    helm.sh/hook-delete-policy: hook-succeeded
+spec:
+  backoffLimit: 5
+  template:
+    metadata:
+      labels:
+        app: kafka-init
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: kafka-init
+          image: {{ .Values.kafka.image | default "confluentinc/cp-kafka:7.5.0" }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Waiting for Kafka to be ready..."
+              until kafka-topics --bootstrap-server kafka:9092 --list > /dev/null 2>&1; do
+                echo "Kafka not ready, retrying in 5s..."
+                sleep 5
+              done
+              echo "Kafka ready — creating topics..."
+              kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists \
+                --topic orders --replication-factor 1 --partitions 3
+              kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists \
+                --topic trades --replication-factor 1 --partitions 3
+              kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists \
+                --topic order-events --replication-factor 1 --partitions 3
+              kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists \
+                --topic orders-dlq --replication-factor 1 --partitions 1
+              kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists \
+                --topic trades-dlq --replication-factor 1 --partitions 1
+              echo "All topics created successfully."
+{{- end }}

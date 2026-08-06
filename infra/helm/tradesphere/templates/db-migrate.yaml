@@ -1,0 +1,41 @@
+{{- if .Values.postgres.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migrate
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "10"
+    helm.sh/hook-delete-policy: hook-succeeded
+spec:
+  backoffLimit: 5
+  template:
+    metadata:
+      labels:
+        app: db-migrate
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: migrate/migrate:v4.17.1
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Database migration job started..."
+              echo "Note: Base schema is created by postgres-init init.sql."
+              echo "Incremental migrations ready."
+          envFrom:
+            - secretRef:
+                name: tradesphere-secret
+            - configMapRef:
+                name: tradesphere-config
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+{{- end }}

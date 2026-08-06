@@ -1,0 +1,190 @@
+{
+  "id": null,
+  "uid": "tradesphere-trading",
+  "title": "TradeSphere — Trading Dashboard",
+  "description": "Real-time trading activity: order throughput, trade execution, matching latency, reservation health",
+  "tags": ["tradesphere", "trading", "business"],
+  "timezone": "browser",
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Orders / Second",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "color": { "mode": "palette-classic" }
+        }
+      },
+      "targets": [
+        {
+          "expr": "job:tradesphere_orders:rate5m",
+          "legendFormat": "Orders/sec (5m avg)"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Trades Executed / Second",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "color": { "fixedColor": "green", "mode": "fixed" }
+        }
+      },
+      "targets": [
+        {
+          "expr": "job:tradesphere_trades:rate5m",
+          "legendFormat": "Trades/sec"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Active WebSocket Clients",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "steps": [
+              { "value": null, "color": "green" },
+              { "value": 5000, "color": "yellow" },
+              { "value": 10000, "color": "red" }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(tradesphere_websocket_clients_active)",
+          "legendFormat": "Connections"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Total Orders (Cumulative)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 8 },
+      "fieldConfig": {
+        "defaults": { "unit": "short" }
+      },
+      "targets": [
+        {
+          "expr": "sum(tradesphere_orders_total)",
+          "legendFormat": "Total Orders"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Total Trades (Cumulative)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 8 },
+      "fieldConfig": {
+        "defaults": { "unit": "short" }
+      },
+      "targets": [
+        {
+          "expr": "sum(tradesphere_trades_total)",
+          "legendFormat": "Total Trades"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Reservation Failures / Second",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "thresholds": {
+            "steps": [
+              { "value": null, "color": "green" },
+              { "value": 1, "color": "yellow" },
+              { "value": 10, "color": "red" }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "job:tradesphere_reservation_failures:rate5m",
+          "legendFormat": "Reservation Failures/sec"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "HTTP Request Latency — P50/P95/P99 by Service",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 12 },
+      "fieldConfig": {
+        "defaults": { "unit": "s" }
+      },
+      "targets": [
+        {
+          "expr": "job:tradesphere_http_p50:5m",
+          "legendFormat": "P50 {{ service }}"
+        },
+        {
+          "expr": "job:tradesphere_http_p95:5m",
+          "legendFormat": "P95 {{ service }}"
+        },
+        {
+          "expr": "job:tradesphere_http_p99:5m",
+          "legendFormat": "P99 {{ service }}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "HTTP Error Rate by Service",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "steps": [
+              { "value": null, "color": "green" },
+              { "value": 0.01, "color": "yellow" },
+              { "value": 0.05, "color": "red" }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "job:tradesphere_http_error_ratio:5m",
+          "legendFormat": "Error Rate {{ service }}"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "HTTP Request Rate by Service",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" }
+      },
+      "targets": [
+        {
+          "expr": "job:tradesphere_http_requests:rate5m",
+          "legendFormat": "{{ service }}"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 36,
+  "version": 1
+}

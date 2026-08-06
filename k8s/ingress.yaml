@@ -1,0 +1,62 @@
+# ============================================================
+# Ingress — Routes external traffic to services
+# Uses GKE Ingress (GCE LB) or nginx-ingress
+# ============================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: tradesphere-ingress
+  namespace: tradesphere
+  annotations:
+    # For GKE native Ingress (Google Cloud Load Balancer):
+    kubernetes.io/ingress.class: "gce"
+    # OR for nginx-ingress controller:
+    # kubernetes.io/ingress.class: "nginx"
+
+    # WebSocket support (nginx-ingress)
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
+
+    # GKE-specific: static IP (created manually, see GCP Deployment Guide)
+    # kubernetes.io/ingress.global-static-ip-name: "tradesphere-ip"
+
+    # HTTPS redirect
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+spec:
+  # Use spec.ingressClassName instead of deprecated annotation
+  ingressClassName: nginx  # Change to "gce" for GKE native LB
+  rules:
+    - host: tradesphere.example.com  # Replace with your domain
+      http:
+        paths:
+          # WebSocket endpoint — must come before /api
+          - path: /ws
+            pathType: Prefix
+            backend:
+              service:
+                name: websocket-service
+                port:
+                  number: 8083
+          # API routes — proxied through API gateway
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  number: 8000
+          # Frontend (catch-all)
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 3000
+  # TLS — managed by cert-manager or GCP managed certificates
+  # tls:
+  #   - hosts:
+  #       - tradesphere.example.com
+  #     secretName: tradesphere-tls

@@ -1,0 +1,408 @@
+# ============================================================
+# NetworkPolicy — Default deny-all, then allow specific paths
+# This follows least-privilege network access
+# ============================================================
+
+# Default deny all ingress/egress within the namespace
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: tradesphere
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# Allow DNS resolution (required for all pods)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: tradesphere
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+---
+# API Gateway: receives external traffic via Ingress, proxies to backend services
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-gateway-netpol
+  namespace: tradesphere
+spec:
+  podSelector:
+    matchLabels:
+      app: api-gateway
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - {} # Allow from Ingress controller (all sources)
+  egress:
+    # Proxy to backend services
+    - to:
+        - podSelector:
+            matchLabels:
+              app: user-service
+      ports:
+        - port: 8084
+    - to:
+        - podSelector:
+            matchLabels:
+              app: order-service
+      ports:
+        - port: 8080
+    - to:
+        - podSelector:
+            matchLabels:
+              app: portfolio-service
+      ports:
+        - port: 8081
+    # Prometheus scraping
+    - to:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - port: 9090
+
+---
+# User Service: receives from API Gateway, connects to PostgreSQL
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: user-service-netpol
+  namespace: tradesphere
+spec:
+  podSelector:
+    matchLabels:
+      app: user-service
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: api-gateway
+      ports:
+        - port: 8084
+    - from:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - port: 8084
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - port: 5432
+
+---
+# Order Service: receives from API Gateway, writes to PostgreSQL, publishes to Kafka, calls Portfolio
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: order-service-netpol
+  namespace: tradesphere
+spec:
+  podSelector:
+    matchLabels:
+      app: order-service
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: api-gateway
+      ports:
+        - port: 8080
+    - from:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - port: 8080
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app: kafka
+      ports:
+        - port: 9092
+    - to:
+        - podSelector:
+            matchLabels:
+              app: portfolio-service
+      ports:
+        - port: 8081
+
+---
+# Portfolio Service: receives from Order + API Gateway, reads Kafka, writes PostgreSQL
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: portfolio-service-netpol
+  namespace: tradesphere
+spec:
+  podSelector:
+    matchLabels:
+      app: portfolio-service
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: api-gateway
+      ports:
+        - port: 8081
+    - from:
+        - podSelector:
+            matchLabels:
+              app: order-service
+      ports:
+        - port: 8081
+    - from:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - port: 8081
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app: kafka
+      ports:
+        - port: 9092
+
+---
+# Matching Engine: reads orders Kafka, writes trades, publishes order-events
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: matching-engine-netpol
+  namespace: tradesphere
+spec:
+  podSelector:
+    matchLabels:
+      app: matching-engine
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - port: 8082
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app: kafka
+      ports:
+        - port: 9092
+
+---
+# WebSocket Service: receives from Ingress, consumes Kafka
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: websocket-service-netpol
+  namespace: tradesphere
+spec:
+  podSelector:
+    matchLabels:
+      app: websocket-service
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - {} # Allow from Ingress controller
+    - from:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - port: 8083
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app: kafka
+      ports:
+        - port: 9092
+
+---
+# PostgreSQL: only receives from application services
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-netpol
+  namespace: tradesphere
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values:
+                  - user-service
+                  - order-service
+                  - portfolio-service
+                  - matching-engine
+                  - websocket-service
+      ports:
+        - port: 5432
+
+---
+# Kafka: receives from services and Zookeeper
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kafka-netpol
+  namespace: tradesphere
+spec:
+  podSelector:
+    matchLabels:
+      app: kafka
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values:
+                  - order-service
+                  - portfolio-service
+                  - matching-engine
+                  - websocket-service
+                  - kafka-exporter
+      ports:
+        - port: 9092
+    - from:
+        - podSelector:
+            matchLabels:
+              app: zookeeper
+      ports:
+        - port: 9092
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: zookeeper
+      ports:
+        - port: 2181
+
+---
+# Prometheus: scrapes all services
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: prometheus-netpol
+  namespace: tradesphere
+spec:
+  podSelector:
+    matchLabels:
+      app: prometheus
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: grafana
+      ports:
+        - port: 9090
+  egress:
+    - {} # Allow scraping all pods
+
+---
+# Grafana: connects to Prometheus, Loki, Jaeger
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: grafana-netpol
+  namespace: tradesphere
+spec:
+  podSelector:
+    matchLabels:
+      app: grafana
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - {} # Allow from Ingress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - port: 9090
+    - to:
+        - podSelector:
+            matchLabels:
+              app: loki
+      ports:
+        - port: 3100
+    - to:
+        - podSelector:
+            matchLabels:
+              app: jaeger
+      ports:
+        - port: 16686

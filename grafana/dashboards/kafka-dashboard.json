@@ -1,0 +1,142 @@
+{
+  "id": null,
+  "uid": "tradesphere-kafka",
+  "title": "TradeSphere — Kafka Dashboard",
+  "description": "Kafka broker health, consumer group lag, topic throughput, DLQ monitoring",
+  "tags": ["tradesphere", "kafka", "messaging"],
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Kafka Brokers Online",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "steps": [
+              { "value": null, "color": "red" },
+              { "value": 1, "color": "green" }
+            ]
+          }
+        }
+      },
+      "targets": [
+        { "expr": "kafka_brokers", "legendFormat": "Brokers" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Consumer Group Lag — orders topic",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "steps": [
+              { "value": null, "color": "green" },
+              { "value": 100, "color": "yellow" },
+              { "value": 1000, "color": "red" }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(kafka_consumergroup_lag{topic=\"orders\"}) by (consumergroup)",
+          "legendFormat": "{{ consumergroup }}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Consumer Group Lag — trades topic",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "fieldConfig": {
+        "defaults": { "unit": "short" }
+      },
+      "targets": [
+        {
+          "expr": "sum(kafka_consumergroup_lag{topic=\"trades\"}) by (consumergroup)",
+          "legendFormat": "{{ consumergroup }}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Consumer Group Lag — order-events topic",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "fieldConfig": {
+        "defaults": { "unit": "short" }
+      },
+      "targets": [
+        {
+          "expr": "sum(kafka_consumergroup_lag{topic=\"order-events\"}) by (consumergroup)",
+          "legendFormat": "{{ consumergroup }}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "DLQ Message Count",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 12 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "steps": [
+              { "value": null, "color": "green" },
+              { "value": 1, "color": "yellow" },
+              { "value": 10, "color": "red" }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(kafka_topic_partition_current_offset{topic=~\".*-dlq\"}) by (topic)",
+          "legendFormat": "{{ topic }}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Total Consumer Lag (All Topics)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "fieldConfig": {
+        "defaults": { "unit": "short" }
+      },
+      "targets": [
+        {
+          "expr": "job:kafka_consumergroup_lag:sum",
+          "legendFormat": "{{ consumergroup }} / {{ topic }}"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Topic Partition Offsets",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "fieldConfig": {
+        "defaults": { "unit": "short" }
+      },
+      "targets": [
+        {
+          "expr": "sum(kafka_topic_partition_current_offset{topic!~\"__.*\"}) by (topic)",
+          "legendFormat": "{{ topic }}"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 36,
+  "version": 1
+}

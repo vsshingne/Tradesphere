@@ -46,6 +46,28 @@ var (
 		Help:    "Duration of HTTP requests in seconds",
 		Buckets: prometheus.DefBuckets,
 	}, []string{"method", "path", "status"})
+
+	// Kafka & Outbox Metrics
+	KafkaPublishTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "tradesphere_kafka_publish_total",
+		Help: "Total number of Kafka messages published",
+	}, []string{"topic"})
+
+	KafkaConsumeTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "tradesphere_kafka_consume_total",
+		Help: "Total number of Kafka messages consumed",
+	}, []string{"topic", "consumer_group"})
+
+	DLQEventsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "tradesphere_dlq_events_total",
+		Help: "Total number of dead-lettered events",
+	}, []string{"topic", "reason"})
+
+	OutboxPublishDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "tradesphere_outbox_publish_duration_seconds",
+		Help:    "Duration of transactional outbox publish cycles in seconds",
+		Buckets: prometheus.DefBuckets,
+	}, []string{"topic"})
 )
 
 // Init sets up OpenTelemetry tracing and starts the metrics server on the given port (usually :9090 or part of the main mux)

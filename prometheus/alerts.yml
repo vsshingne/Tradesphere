@@ -1,0 +1,211 @@
+groups:
+  # ============================================================
+  # TradeSphere Business Alerts
+  # ============================================================
+  - name: tradesphere.business
+    rules:
+      - alert: HighOrderCreationRate
+        expr: rate(tradesphere_orders_total[5m]) > 1000
+        for: 2m
+        labels:
+          severity: info
+          team: trading
+        annotations:
+          summary: "High order creation rate detected"
+          description: "Orders/sec is {{ $value | humanize }}/s, exceeding 1000/min threshold"
+          runbook: "https://wiki.internal/runbooks/high-order-rate"
+
+      - alert: OrderServiceDown
+        expr: up{service="order-service"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: trading
+        annotations:
+          summary: "Order service is down"
+          description: "order-service pod {{ $labels.kubernetes_pod_name }} is not scraping"
+          runbook: "kubectl rollout restart deployment/order-service -n tradesphere"
+
+      - alert: MatchingEngineDown
+        expr: up{service="matching-engine"} == 0
+        for: 30s
+        labels:
+          severity: critical
+          team: trading
+        annotations:
+          summary: "Matching engine is down — NO TRADES WILL EXECUTE"
+          description: "matching-engine {{ $labels.kubernetes_pod_name }} is unreachable"
+          runbook: "kubectl rollout restart deployment/matching-engine -n tradesphere"
+
+      - alert: HighReservationFailures
+        expr: rate(tradesphere_reservation_failures_total[5m]) > 10
+        for: 1m
+        labels:
+          severity: warning
+          team: trading
+        annotations:
+          summary: "High rate of balance/position reservation failures"
+          description: "Reservation failures at {{ $value | humanize }}/s. Users may have insufficient funds or positions."
+          runbook: "https://wiki.internal/runbooks/reservation-failures"
+
+      - alert: NoTradesExecuted
+        expr: rate(tradesphere_trades_total[15m]) == 0 and rate(tradesphere_orders_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          team: trading
+        annotations:
+          summary: "Orders submitted but no trades executing"
+          description: "Orders are being placed but matching engine hasn't produced trades in 15 minutes"
+          runbook: "Check matching-engine logs and Kafka consumer lag"
+
+  # ============================================================
+  # Infrastructure Alerts
+  # ============================================================
+  - name: tradesphere.infrastructure
+    rules:
+      - alert: HighDBLatency
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(tradesphere_db_query_duration_seconds_bucket[5m])) by (le, service)
+          ) > 1.0
+        for: 2m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High DB query latency on {{ $labels.service }}"
+          description: "99th percentile DB query duration is {{ $value | humanize }}s (threshold: 1s)"
+          runbook: "https://wiki.internal/runbooks/db-latency"
+
+      - alert: DBConnectionPoolExhausted
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(tradesphere_db_query_duration_seconds_bucket[5m])) by (le)
+          ) > 5.0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Database response time critically high — possible connection pool exhaustion"
+          description: "P99 DB query latency {{ $value | humanize }}s"
+
+      - alert: HighHTTPErrorRate
+        expr: |
+          sum(rate(tradesphere_http_request_duration_seconds_count{status=~"5.."}[5m])) by (service)
+          /
+          sum(rate(tradesphere_http_request_duration_seconds_count[5m])) by (service)
+          > 0.05
+        for: 2m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High 5xx error rate on {{ $labels.service }}"
+          description: "Error rate is {{ $value | humanizePercentage }} for {{ $labels.service }}"
+
+      - alert: HighHTTPLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(tradesphere_http_request_duration_seconds_bucket[5m])) by (le, service)
+          ) > 2.0
+        for: 3m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High HTTP response latency on {{ $labels.service }}"
+          description: "P95 latency is {{ $value | humanize }}s (threshold: 2s)"
+
+      - alert: PodNotReady
+        expr: |
+          kube_pod_status_ready{condition="false", namespace="tradesphere"} == 1
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Pod {{ $labels.pod }} not ready in namespace {{ $labels.namespace }}"
+          description: "Pod has been in NotReady state for more than 5 minutes"
+
+      - alert: PodCrashLooping
+        expr: |
+          rate(kube_pod_container_status_restarts_total{namespace="tradesphere"}[15m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Pod {{ $labels.pod }} is crash looping"
+          description: "Container {{ $labels.container }} in pod {{ $labels.pod }} has restarted {{ $value }} times in 15m"
+
+      - alert: PersistentVolumeUsageHigh
+        expr: |
+          kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes > 0.85
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "PVC {{ $labels.persistentvolumeclaim }} usage above 85%"
+          description: "Volume is {{ $value | humanizePercentage }} full"
+
+  # ============================================================
+  # Kafka Alerts
+  # ============================================================
+  - name: tradesphere.kafka
+    rules:
+      - alert: KafkaConsumerLagHigh
+        expr: kafka_consumergroup_lag > 1000
+        for: 3m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Kafka consumer lag is high for {{ $labels.consumergroup }}"
+          description: "Consumer group {{ $labels.consumergroup }} is {{ $value }} messages behind on topic {{ $labels.topic }}"
+
+      - alert: KafkaConsumerLagCritical
+        expr: kafka_consumergroup_lag > 10000
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "CRITICAL: Kafka consumer lag for {{ $labels.consumergroup }}"
+          description: "Consumer group is {{ $value }} messages behind — service may be down"
+
+      - alert: KafkaBrokerDown
+        expr: kafka_brokers < 1
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Kafka broker is down"
+          description: "No Kafka brokers available — all messaging will fail"
+
+  # ============================================================
+  # WebSocket Alerts
+  # ============================================================
+  - name: tradesphere.websocket
+    rules:
+      - alert: WebSocketConnectionSpike
+        expr: tradesphere_websocket_clients_active > 10000
+        for: 2m
+        labels:
+          severity: warning
+          team: trading
+        annotations:
+          summary: "WebSocket connection count spike"
+          description: "{{ $value }} active WebSocket connections (threshold: 10000)"
+
+      - alert: WebSocketServiceDown
+        expr: up{service="websocket-service"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: trading
+        annotations:
+          summary: "WebSocket service is down — users won't receive real-time updates"
